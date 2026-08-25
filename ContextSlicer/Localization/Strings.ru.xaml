@@ -1,0 +1,37 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:system="clr-namespace:System;assembly=System.Runtime">
+    <!-- Заголовки блоков -->
+    <system:String x:Key="Str_ProjManagement">1. Управление Проектом</system:String>
+    <system:String x:Key="Str_ModuleManagement">2. Нарезаемые Модули / Контексты ИИ</system:String>
+    <system:String x:Key="Str_FilesHeader">Файлы текущего модуля</system:String>
+    <system:String x:Key="Str_PromptHeader">Общие правила написания кода (Prompt)</system:String>
+
+    <!-- Элементы блока проекта -->
+    <system:String x:Key="Str_SelectProj">Выбор проекта:</system:String>
+    <system:String x:Key="Str_ProjName">Название проекта:</system:String>
+    <system:String x:Key="Str_CreateProj">Создать проект</system:String>
+    <system:String x:Key="Str_Autosave">Автосохранение при выходе</system:String>
+    <system:String x:Key="Str_DarkTheme">Тёмная тема</system:String>
+    <system:String x:Key="Str_RootPath">Корневая папка (код):</system:String>
+    <system:String x:Key="Str_OutputPath">Выходная папка (ТЗ):</system:String>
+    <system:String x:Key="Str_Browse">Обзор...</system:String>
+
+    <!-- Элементы блока модулей -->
+    <system:String x:Key="Str_SelectModule">Выбор модуля:</system:String>
+    <system:String x:Key="Str_ModuleName">Название модуля:</system:String>
+    <system:String x:Key="Str_AddModule">Добавить модуль</system:String>
+    <system:String x:Key="Str_FileFormat">Формат файла:</system:String>
+
+    <!-- Главные кнопки -->
+    <system:String x:Key="Str_SaveProject">СОХРАНИТЬ ИЗМЕНЕНИЯ ПРОЕКТА</system:String>
+    <system:String x:Key="Str_Generate">СГЕНЕРИРОВАТЬ ФАЙЛ КОНТЕКСТА МОДУЛЯ</system:String>
+
+    <!-- Оверлей прогресса -->
+    <system:String x:Key="Str_Cancel">ОТМЕНИТЬ ОПЕРАЦИЮ</system:String>
+
+    <!-- Фолбэк для заголовка экспандера -->
+    <system:String x:Key="Str_ProjNotSelected">Проект не выбран</system:String>
+    <system:String x:Key="Str_AppTitle">Нарезка контекста кода для ИИ</system:String>
+
+</ResourceDictionary>
