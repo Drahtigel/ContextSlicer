@@ -1,0 +1,26 @@
+## Игнорируем результаты компиляции и сборки .NET
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+x64/
+x86/
+bin/
+obj/
+
+## Локальный кэш и настройки Visual Studio
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+## Кэш пакетов NuGet
+*.nuget.props
+*.nuget.targets
+packages/
+
+## ЛОКАЛЬНАЯ БАЗА НАСТРОЕК СЛАЙСЕРА
+# Файл projects.json хранит ваши личные пути к исходникам VTT и роутера.
+# Его категорически нельзя публиковать на GitHub!
+projects.json
+App.config

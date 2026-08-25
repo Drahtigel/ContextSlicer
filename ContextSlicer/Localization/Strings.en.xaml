@@ -1,0 +1,37 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:system="clr-namespace:System;assembly=System.Runtime">
+    <!-- Заголовки блоков -->
+    <system:String x:Key="Str_ProjManagement">1. Project Management</system:String>
+    <system:String x:Key="Str_ModuleManagement">2. Slicing Modules / AI Contexts</system:String>
+    <system:String x:Key="Str_FilesHeader">Current Module Files</system:String>
+    <system:String x:Key="Str_PromptHeader">General Code Rules (Prompt)</system:String>
+
+    <!-- Элементы блока проекта -->
+    <system:String x:Key="Str_SelectProj">Select Project:</system:String>
+    <system:String x:Key="Str_ProjName">Project Name:</system:String>
+    <system:String x:Key="Str_CreateProj">Create Project</system:String>
+    <system:String x:Key="Str_Autosave">Autosave on exit</system:String>
+    <system:String x:Key="Str_DarkTheme">Dark theme</system:String>
+    <system:String x:Key="Str_RootPath">Root folder (code):</system:String>
+    <system:String x:Key="Str_OutputPath">Output folder (contexts):</system:String>
+    <system:String x:Key="Str_Browse">Browse...</system:String>
+
+    <!-- Элементы блока модулей -->
+    <system:String x:Key="Str_SelectModule">Select Module:</system:String>
+    <system:String x:Key="Str_ModuleName">Module Name:</system:String>
+    <system:String x:Key="Str_AddModule">Add Module</system:String>
+    <system:String x:Key="Str_FileFormat">File Format:</system:String>
+
+    <!-- Главные кнопки -->
+    <system:String x:Key="Str_SaveProject">SAVE PROJECT CHANGES</system:String>
+    <system:String x:Key="Str_Generate">GENERATE MODULE CONTEXT FILE</system:String>
+
+    <!-- Оверлей прогресса -->
+    <system:String x:Key="Str_Cancel">CANCEL OPERATION</system:String>
+
+    <!-- Фолбэк для заголовка экспандера -->
+    <system:String x:Key="Str_ProjNotSelected">Project not selected</system:String>
+    <system:String x:Key="Str_AppTitle">Code Context Slicer for AI</system:String>
+
+</ResourceDictionary>

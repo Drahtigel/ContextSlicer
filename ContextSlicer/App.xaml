@@ -1,0 +1,21 @@
+﻿<Application x:Class="ContextSlicer.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:ContextSlicer"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- По умолчанию при старте всегда загружаем Светлую тему -->
+                <ResourceDictionary x:Name="ThemeDictionary">
+                    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#F5F5F5"/>
+                    <SolidColorBrush x:Key="ControlBackgroundBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="TextBoxBackgroundBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="TextBrush" Color="#000000"/>
+                    <SolidColorBrush x:Key="SplitterBrush" Color="#E0E0E0"/>
+                    <SolidColorBrush x:Key="BorderBrush" Color="#CCCCCC"/>
+                </ResourceDictionary>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
