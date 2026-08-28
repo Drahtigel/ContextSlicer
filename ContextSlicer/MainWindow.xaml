@@ -10,7 +10,7 @@
          WindowStartupLocation="CenterScreen"
          Closing="Window_Closing"
         Background="{DynamicResource WindowBackgroundBrush}"
-        Foreground="{DynamicResource TextBrush}">
+        Foreground="{DynamicResource TextBrush}" Icon="/ContentSlicer.ico">
 
     <Window.Resources>
         <ResourceDictionary>
@@ -77,19 +77,95 @@
                 <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
                 <Setter Property="BorderThickness" Value="1"/>
             </Style>
-            <Style TargetType="TreeViewItem">
-                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
-            </Style>
-
-            <!-- 6. Мелкие серые кнопки управления -->
+            <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+            <!-- ЕДИНСТВЕННЫЙ И ИСПРАВЛЕННЫЙ СТИЛЬ ДЛЯ ВСЕХ КНОПОК ФОРМЫ -->
             <Style TargetType="Button">
                 <Setter Property="Background" Value="{DynamicResource TextBoxBackgroundBrush}"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
                 <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
                 <Setter Property="Padding" Value="10,2"/>
                 <Setter Property="Height" Value="24"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <!-- Основной контейнер кнопки берет фон напрямую из свойства Background самого элемента -->
+                            <Border x:Name="mainBorder" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="3">
+                                <Grid>
+                                    <!-- Скрытый слой затемнения/высветления для реализации красивого эффекта Hover -->
+                                    <Border x:Name="hoverOverlay" Background="Transparent" CornerRadius="2"/>
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                </Grid>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <!-- ЭФФЕКТ НАВЕДЕНИЯ МЫШИ (ИСПРАВЛЕНО: работает универсально для всех типов кнопок) -->
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="mainBorder" Property="BorderBrush" Value="#007ACC"/>
+                                    <!-- Полупрозрачный белый слой делает кнопку мягко светлее при наведении (отлично для темной темы) -->
+                                    <Setter TargetName="hoverOverlay" Property="Background" Value="#15FFFFFF"/>
+                                </Trigger>
+                                <!-- ЭФФЕКТ НАЖАТИЯ (КЛИКА) -->
+                                <Trigger Property="IsPressed" Value="True">
+                                    <!-- Мягкое затемнение при клике -->
+                                    <Setter TargetName="hoverOverlay" Property="Background" Value="#30000000"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
-            <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
+
+            <!-- ИСПРАВЛЕНО: Безопасный стиль выделения строк дерева без конфликтов типов данных -->
+            <Style TargetType="TreeViewItem">
+                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                <Style.Resources>
+                    <!-- Полностью обнуляем дефолтные системные системные цвета выделения Windows Aero, -->
+                    <!-- чтобы они не окрашивали ноду в ядовито-синий или черный цвет при фокусе -->
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="Transparent"/>
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="Transparent"/>
+                </Style.Resources>
+
+                <Style.Triggers>
+                    <!-- Перекрашиваем текст ноды в красивый акцентный синий цвет при её выделении -->
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Foreground" Value="#007ACC"/>
+                        <Setter Property="FontWeight" Value="SemiBold"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+
+            <!-- ИСПРАВЛЕНО: Полное и бескомпромиссное уничтожение плейсхолдера иконок в ContextMenu -->
+            <Style TargetType="ContextMenu">
+                <Setter Property="Background" Value="#252526"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                
+            </Style>
+            <!-- ИСПРАВЛЕНО: Бескомпромиссное уничтожение плейсхолдера иконок через переопределение шаблона -->
+            <Style TargetType="MenuItem">
+                <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
+                <Setter Property="Background" Value="#252526"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="MenuItem">
+                            <!-- Мы полностью выкинули системную таблицу с колонкой для иконок -->
+                            <Border x:Name="idxBorder" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="0" Padding="15,6">
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <!-- Красивый Hover-эффект для пункта тёмного меню -->
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="idxBorder" Property="Background" Value="#3E3E42"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
         </ResourceDictionary>
     </Window.Resources>
     <!-- Главный контейнер формы с принудительной динамической кистью фона -->
@@ -167,24 +243,36 @@
                 </Grid>
             </Grid>
         </Expander>
-        <!-- 2. БЛОК УПРАВЛЕНИЯ МОДУЛЯМИ -->
+        <!-- 2. БЛОК УПРАВЛЕНИЯ МОДУЛЯМИ (Добавлена кнопка удаления и фильтров) -->
         <GroupBox Header="{DynamicResource Str_ModuleManagement}" Grid.Row="1" Margin="0,0,0,15" Padding="5">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <!-- Левая колонка: Селектор модуля и кнопка удаления -->
                     <ColumnDefinition Width="Auto"/>
+                    <!-- Средняя колонка: Ввод имени и выбор формата -->
                     <ColumnDefinition Width="*"/>
+                    <!-- Правая колонка: Кнопки действий -->
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
+                <!-- Колонна 1: Выбор и удаление текущего модуля -->
                 <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Top" Margin="0,2,0,0">
                     <TextBlock Text="{DynamicResource Str_SelectModule}" VerticalAlignment="Center" Margin="5,0,5,0"/>
                     <ComboBox ItemsSource="{Binding Modules}" 
                               SelectedItem="{Binding SelectedModule}" 
                               DisplayMemberPath="ModuleName" 
-                              Width="200" Height="26" VerticalContentAlignment="Center"
+                              Width="180" Height="26" VerticalContentAlignment="Center"
                               IsEnabled="{Binding IsModuleSelectorEnabled}"/>
+
+                    <!-- Кнопка удаления модуля (ИСПРАВЛЕНО: Компактная кнопка с мультиязычной подсказкой) -->
+                    <Button Content="🗑" ToolTip="{DynamicResource Str_DeleteModule}"
+        Command="{Binding DeleteCurrentModuleCommand}" 
+        Width="26" Height="26" Margin="5,0,0,0" Padding="0"
+        Foreground="#E53935" FontWeight="Bold" 
+        IsEnabled="{Binding IsModuleSelectorEnabled}"/>
                 </StackPanel>
 
+                <!-- Колонна 2: Название и формат файла -->
                 <Grid Grid.Column="1" Margin="20,0,20,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -193,7 +281,7 @@
 
                     <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,6">
                         <TextBlock Text="{DynamicResource Str_ModuleName}" VerticalAlignment="Center" Width="110"/>
-                        <TextBox Text="{Binding ModuleNameInput, UpdateSourceTrigger=PropertyChanged}" Width="220" Height="24" VerticalContentAlignment="Center"/>
+                        <TextBox Text="{Binding ModuleNameInput, UpdateSourceTrigger=PropertyChanged}" Width="200" Height="24" VerticalContentAlignment="Center"/>
                     </StackPanel>
 
                     <StackPanel Orientation="Horizontal" Grid.Row="1" Margin="0,2,0,0">
@@ -203,11 +291,14 @@
                     </StackPanel>
                 </Grid>
 
-                <Button Content="{DynamicResource Str_AddModule}" Command="{Binding CreateNewModuleCommand}" Grid.Column="2" Padding="15,0" Height="26" VerticalAlignment="Top" Margin="0,1,5,0"/>
+                <!-- Колонна 3: Главные управляющие кнопки (Добавлен вызов окна настроек фильтров) -->
+                <StackPanel Orientation="Horizontal" Grid.Column="2" VerticalAlignment="Top" Margin="0,1,5,0">
+                    <Button Content="{DynamicResource Str_GlobalFilters}" Command="{Binding OpenFiltersWindowCommand}" Padding="10,0" Height="26" Margin="0,0,10,0"/>
+                    <Button Content="{DynamicResource Str_AddModule}" Command="{Binding CreateNewModuleCommand}" Padding="15,0" Height="26" FontWeight="Bold"/>
+                </StackPanel>
             </Grid>
         </GroupBox>
-
-        <!-- 3. БЛОК РАБОЧЕЙ ОБЛАСТИ (ДЕРЕВО И ПРАВИЛА) -->
+        <!-- 3. БЛОК РАБОЧЕЙ ОБЛАСТИ (Исправлена привязка команды и стиль ContextMenu) -->
         <Grid Grid.Row="2" Margin="0,0,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.3*"/>
@@ -217,12 +308,28 @@
 
             <GroupBox Header="{DynamicResource Str_FilesHeader}" Grid.Column="0" Margin="0,0,5,0">
                 <TreeView ItemsSource="{Binding RootNode.Children}">
+                    <TreeView.ContextMenu>
+                        <ContextMenu Background="#252526" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
+                            <!-- ИСПРАВЛЕНО: Убираем плейсхолдер иконки с помощью переопределения шаблона иконки -->
+                            <MenuItem Header="{DynamicResource Str_MnuIgnoreItem}"
+                                      Foreground="{DynamicResource TextBrush}" Background="#252526"
+                                      Command="{Binding Path=PlacementTarget.DataContext.AddNodeToFiltersCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                      CommandParameter="{Binding Path=PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                <!-- Этот трюк полностью вырезает пустое место под иконку слева -->
+                                <MenuItem.Icon>
+                                    <Grid Visibility="Collapsed"/>
+                                </MenuItem.Icon>
+                            </MenuItem>
+                        </ContextMenu>
+                    </TreeView.ContextMenu>
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type local:FileSystemNode}" ItemsSource="{Binding Children}">
-                            <StackPanel Orientation="Horizontal" Margin="2">
-                                <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" Foreground="{DynamicResource TextBrush}"/>
-                            </StackPanel>
+                            <Grid Background="Transparent">
+                                <StackPanel Orientation="Horizontal" Margin="2">
+                                    <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
                         </HierarchicalDataTemplate>
                     </TreeView.Resources>
                 </TreeView>
@@ -236,15 +343,16 @@
             </GroupBox>
         </Grid>
 
-        <!-- 4. БЛОК НИЖНИХ КНОПОК -->
+        <!-- 4. БЛОК НИЖНИХ КНОПОК (ИСПРАВЛЕНО: Убран Style={x:Null}, мешавший обработке Hover) -->
         <Grid Grid.Row="3" Margin="0,5,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.3*"/>
                 <ColumnDefinition Width="2*"/>
             </Grid.ColumnDefinitions>
 
-            <Button Content="{DynamicResource Str_SaveProject}" Command="{Binding SaveProjectCommand}" Grid.Column="0" Height="48" Margin="0,0,5,0" Style="{x:Null}" Background="#4CAF50" Foreground="White" FontWeight="Bold" FontSize="13"/>
-            <Button Content="{DynamicResource Str_Generate}" Command="{Binding GenerateContextCommand}" Grid.Column="1" Height="48" Margin="5,0,0,0" Style="{x:Null}" Background="#007ACC" Foreground="White" FontWeight="Bold" FontSize="13"/>
+            <!-- Сохраняем индивидуальные цвета кнопок, но убираем x:Null, чтобы системный триггер шаблона работал корректно -->
+            <Button Content="{DynamicResource Str_SaveProject}" Command="{Binding SaveProjectCommand}" Grid.Column="0" Height="48" Margin="0,0,5,0" Background="#4CAF50" Foreground="White" FontWeight="Bold" FontSize="13"/>
+            <Button Content="{DynamicResource Str_Generate}" Command="{Binding GenerateContextCommand}" Grid.Column="1" Height="48" Margin="5,0,0,0" Background="#007ACC" Foreground="White" FontWeight="Bold" FontSize="13"/>
         </Grid>
 
         <!-- ОВЕРЛЕЙ ПРОГРЕССА -->

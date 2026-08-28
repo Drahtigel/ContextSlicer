@@ -22,12 +22,47 @@ namespace ContextSlicer
     {
         public MainWindow()
         {
-            // 1. Сначала принудительно инициализируем язык интерфейса
             InitializeLanguage();
-
-            // 2. Инициализируем компоненты формы и ViewModel
             InitializeComponent();
             DataContext = new MainViewModel();
+
+            // Красим заголовок главного окна при старте (считываем текущее состояние темы из App)
+            this.SourceInitialized += (s, e) => {
+                bool isDark = (DataContext as MainViewModel)?.IsDarkTheme ?? false;
+                InverseBooleanConverter.ApplyTitleBarColor(this, isDark);
+            };
+        }
+
+        // Импортируем функцию из системной библиотеки Windows для управления внешним видом окон
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        // Публичный метод, который сможет вызывать наша ViewModel при смене темы
+        public void UpdateTitleBarColor(bool isDark)
+        {
+            try
+            {
+                var interopHelper = new System.Windows.Interop.WindowInteropHelper(this);
+                IntPtr hwnd = interopHelper.Handle;
+
+                if (hwnd == IntPtr.Zero) return;
+
+                // В Windows 11 константа 35 отвечает за цвет фона заголовка (DWMWA_CAPTION_COLOR)
+                int attribute = 35;
+
+                // Переводим HEX-цвета в формат BGR, который понимает Windows:
+                // #1E1E1E (темный) превращается в 0x1E1E1E
+                // #F5F5F5 (светлый) превращается в 0xF5F5F5
+                int colorBGR = isDark ? 0x1E1E1E : 0xF5F5F5;
+
+                DwmSetWindowAttribute(hwnd, attribute, ref colorBGR, sizeof(int));
+
+                // Дополнительно меняем цвет текста заголовка (DWMWA_TEXT_COLOR = 36), чтобы он оставался контрастным
+                int textAttribute = 36;
+                int textColorBGR = isDark ? 0xF1F1F1 : 0x000000;
+                DwmSetWindowAttribute(hwnd, textAttribute, ref textColorBGR, sizeof(int));
+            }
+            catch { /* Игнорируем на старых версиях Windows 10, где этот атрибут не поддерживается */ }
         }
 
         private void InitializeLanguage()
@@ -39,6 +74,7 @@ namespace ContextSlicer
             string languageFile = currentCulture.Equals("ru", StringComparison.OrdinalIgnoreCase)
                 ? "Strings.ru.xaml"
                 : "Strings.en.xaml";
+            
 
             try
             {

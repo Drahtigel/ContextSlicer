@@ -33,5 +33,8 @@
     <!-- Фолбэк для заголовка экспандера -->
     <system:String x:Key="Str_ProjNotSelected">Project not selected</system:String>
     <system:String x:Key="Str_AppTitle">Code Context Slicer for AI</system:String>
+    <system:String x:Key="Str_DeleteModule">Delete Module</system:String>
+    <system:String x:Key="Str_GlobalFilters">Global Filters</system:String>
+    <system:String x:Key="Str_MnuIgnoreItem">Add to exclusion filter</system:String>
 
 </ResourceDictionary>

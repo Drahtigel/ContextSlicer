@@ -43,7 +43,112 @@ public partial class MainViewModel : ObservableObject
     // Внимательно проверьте написание этой переменной:
     [ObservableProperty]
     private ContextModule? _selectedModule;
+    // Одна универсальная команда для контекстного меню TreeView
+    [CommunityToolkit.Mvvm.Input.RelayCommand]
+    private void AddNodeToFilters(FileSystemNode? node)
+    {
+        if (node == null) return;
+
+        if (node.IsFile)
+        {
+            // Если кликнули по файлу — отправляем его расширение в фильтр
+            string ext = System.IO.Path.GetExtension(node.FullPath).ToLower();
+            if (!string.IsNullOrEmpty(ext) && !GlobalFilterService.Current.ExcludedExtensions.Contains(ext))
+            {
+                GlobalFilterService.Current.ExcludedExtensions.Add(ext);
+                GlobalFilterService.SaveFilters();
+                TriggerTreeRefresh();
+            }
+        }
+        else
+        {
+            // Если кликнули по папке — отправляем её имя в фильтр
+            string folderName = node.Name;
+            if (!GlobalFilterService.Current.ExcludedFolders.Contains(folderName))
+            {
+                GlobalFilterService.Current.ExcludedFolders.Add(folderName);
+                GlobalFilterService.SaveFilters();
+                TriggerTreeRefresh();
+            }
+        }
+    }
+
+    // Вспомогательный метод перезагрузки дерева файлов (оставляем старый)
+    // Вспомогательный метод перезагрузки дерева файлов (ИСПРАВЛЕНО: Полный принудительный пересчет)
+    private void TriggerTreeRefresh()
+    {
+        if (SelectedProject != null && !string.IsNullOrWhiteSpace(RootPath))
+        {
+            // Запускаем стандартный метод сборки дерева, который у вас вызывается при выборе папки.
+            // Передаем текущий корневой путь и список уже сохраненных чекнутых файлов модуля
+            var savedChecked = new List<string>();
+            if (SelectedModule?.CheckedFiles != null)
+            {
+                savedChecked = new List<string>(SelectedModule.CheckedFiles);
+            }
+
+            // Перестраиваем структуру дерева с учетом НОВЫХ глобальных фильтров
+            RootNode = ContextBuilderService.BuildTree(RootPath, savedChecked);
+
+            // Уведомляем интерфейс WPF, что дерево файлов полностью обновилось
+            OnPropertyChanged(nameof(RootNode));
+        }
+    }
+
+
+    [RelayCommand]
+    private void OpenFiltersWindow()
+    {
+        var filterWin = new FilterWindow();
+        // Устанавливаем главное окно владельцем, чтобы новое окно красиво центрировалось поверх него
+        filterWin.Owner = System.Windows.Application.Current.MainWindow;
+
+        // ShowDialog() полностью блокирует поток выполнения до тех пор, пока пользователь не закроет окно фильтров.
+        // Как только пользователь нажмет кнопку «ЗАКРЫТЬ НАСТРОЙКИ» или крестик — код пойдет дальше.
+        filterWin.ShowDialog();
+
+        // ИСПРАВЛЕНО: Прямо здесь вызываем наш железно работающий метод полной пересборки дерева файлов.
+        // Это заставит утилиту мгновенно убрать с экрана все только что добавленные папки/расширения 
+        // или вернуть обратно те, что пользователь вручную удалил из списков!
+        TriggerTreeRefresh();
+    }
+
+
+
     // Свойство доступности блока модулей (теперь со строгим уведомлением для интерфейса)
+    // Настраиваемый черный список папок (дефолтные значения)
+    [ObservableProperty]
+    private string _excludedFoldersInput = "bin, obj, .vs, publish, .git, .idea, node_modules";
+
+    // Настраиваемый черный список мусорных и бинарных расширений (дефолтные значения)
+    [ObservableProperty]
+    private string _excludedExtensionsInput = ".png, .jpg, .jpeg, .gif, .ico, .bmp, .webp, .mp3, .wav, .ogg, .flac, .aac, .mp4, .avi, .mkv, .mov, .zip, .rar, .7z, .tar, .gz, .dll, .exe, .pdb, .suo, .user, .fbx, .obj, .max, .blend, .3ds, .bak, .tmp, .temp, .log";
+
+    [RelayCommand]
+    private void DeleteCurrentModule()
+    {
+        if (SelectedModule == null) return;
+
+        // Спрашиваем подтверждение удаления на языке системы
+        var result = System.Windows.MessageBox.Show(
+            "Вы уверены, что хотите полностью удалить этот модуль и все его сохраненные настройки файлов?",
+            "Удаление модуля",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            var moduleToRemove = SelectedModule;
+            SelectedModule = null; // Сбрасываем выбор
+
+            Modules.Remove(moduleToRemove);
+            OnPropertyChanged(nameof(IsModuleSelectorEnabled));
+
+            // Автоматически сохраняем изменения на диск
+            SaveProject();
+        }
+    }
+
     public bool IsModuleSelectorEnabled
     {
         get => SelectedProject != null;
@@ -379,6 +484,14 @@ public partial class MainViewModel : ObservableObject
 
         // Внедряем новую палитру в глобальный контекст WPF
         Application.Current.Resources.MergedDictionaries.Add(themeDict);
+
+        // Красим заголовок главного окна на лету
+        if (Application.Current.MainWindow is MainWindow mainWin)
+        {
+            InverseBooleanConverter.ApplyTitleBarColor(mainWin, value);
+        }
+
+
     }
 
 

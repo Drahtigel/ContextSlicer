@@ -33,5 +33,8 @@
     <!-- Фолбэк для заголовка экспандера -->
     <system:String x:Key="Str_ProjNotSelected">Проект не выбран</system:String>
     <system:String x:Key="Str_AppTitle">Нарезка контекста кода для ИИ</system:String>
+    <system:String x:Key="Str_DeleteModule">Удалить модуль</system:String>
+    <system:String x:Key="Str_GlobalFilters">Глобальные фильтры</system:String>
+    <system:String x:Key="Str_MnuIgnoreItem">Добавить в фильтр исключений</system:String>
 
 </ResourceDictionary>
