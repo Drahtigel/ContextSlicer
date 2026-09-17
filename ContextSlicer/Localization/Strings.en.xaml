@@ -43,4 +43,24 @@
     <system:String x:Key="Str_StatsChars">Total characters:</system:String>
     <system:String x:Key="Str_StatsTokens">Estimated tokens:</system:String>
     <system:String x:Key="Str_Calculating">Calculating size...</system:String>
+    <!-- Syntax tree element prefixes -->
+    <system:String x:Key="Str_Type_Namespace">[NAMESPACE]</system:String>
+    <system:String x:Key="Str_Type_Class">[CLASS]</system:String>
+    <system:String x:Key="Str_Type_Struct">[STRUCT]</system:String>
+    <system:String x:Key="Str_Type_Interface">[INTERFACE]</system:String>
+    <system:String x:Key="Str_Type_Enum">[ENUM]</system:String>
+    <system:String x:Key="Str_Type_Function">[METHOD]</system:String>
+    <system:String x:Key="Str_Type_Section">[SECTION]</system:String>
+    <system:String x:Key="Str_LoadingStub">Loading structure...</system:String>
+    <!-- Specific SQL prefixes -->
+    <system:String x:Key="Str_Type_SqlTable">[TABLE]</system:String>
+    <system:String x:Key="Str_Type_SqlView">[VIEW]</system:String>
+    <system:String x:Key="Str_Type_SqlFunction">[SQL FUNCTION]</system:String>
+
+    <!-- Module rename block (Overlay) -->
+    <system:String x:Key="Str_ModuleNameLabel">Module Name:</system:String>
+    <system:String x:Key="Str_RenameTitle">Rename Module</system:String>
+    <system:String x:Key="Str_BtnCancel">Cancel</system:String>
+    <system:String x:Key="Str_BtnAccept">Accept</system:String>
+    <system:String x:Key="Str_TooltipRename">Rename module</system:String>
 </ResourceDictionary>

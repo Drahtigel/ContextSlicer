@@ -64,7 +64,7 @@ namespace ContextSlicer
             }
             catch { /* Игнорируем на старых версиях Windows 10, где этот атрибут не поддерживается */ }
         }
-
+        
         private void InitializeLanguage()
         {
             // Определяем язык операционной системы Windows
@@ -114,13 +114,33 @@ namespace ContextSlicer
             }
         }
 
-        private void TxtModuleName_LostFocus(object sender, RoutedEventArgs e)
+        
+        // Обработчик ручного раскрытия узла дерева (Ленивая загрузка)
+        private async void TreeView_Expanded(object sender, RoutedEventArgs e)
         {
-            if (DataContext is MainViewModel vm && vm.UpdateCurrentModuleNameCommand.CanExecute(null))
+            // Защита от всплывания события: обрабатываем только тот TreeViewItem, который раскрыли непосредственно
+            if (e.OriginalSource is TreeViewItem item && item.DataContext is FileSystemNode node)
             {
-                vm.UpdateCurrentModuleNameCommand.Execute(null);
+                // Нам интересны только поддерживаемые файлы (например, .cs, .js, .html)
+                if (node.IsFile && !node.IsSyntaxNode)
+                {
+                    string ext = System.IO.Path.GetExtension(node.FullPath);
+                    if (SyntaxParserFactory.IsSupported(ext))
+                    {
+                        if (DataContext is MainViewModel vm)
+                        {
+                            // Вызываем наш асинхронный метод наполнения нодами из ViewModel
+                            // Метод PopulateSyntaxNodesAsync мы сделали публичным (или internal) во ViewModel
+                            await vm.PopulateSyntaxNodesAsync(node);
+                        }
+                    }
+                }
             }
         }
 
+        private void TxtModuleName_TextChanged(object sender, TextChangedEventArgs e)
+        {
+
+        }
     }
 }

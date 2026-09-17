@@ -43,4 +43,23 @@
     <system:String x:Key="Str_StatsChars">Всего символов:</system:String>
     <system:String x:Key="Str_StatsTokens">Примерно токенов:</system:String>
     <system:String x:Key="Str_Calculating">Пересчет объема...</system:String>
+    <!-- Префиксы элементов синтаксического дерева -->
+    <system:String x:Key="Str_Type_Namespace">[ПРОСТРАНСТВО ИМЁН]</system:String>
+    <system:String x:Key="Str_Type_Class">[КЛАСС]</system:String>
+    <system:String x:Key="Str_Type_Struct">[СТРУКТУРА]</system:String>
+    <system:String x:Key="Str_Type_Interface">[ИНТЕРФЕЙС]</system:String>
+    <system:String x:Key="Str_Type_Enum">[ПЕРЕЧИСЛЕНИЕ]</system:String>
+    <system:String x:Key="Str_Type_Function">[МЕТОД]</system:String>
+    <system:String x:Key="Str_Type_Section">[СЕКЦИЯ]</system:String>
+    <system:String x:Key="Str_LoadingStub">Загрузка структуры...</system:String>
+    <!-- Специфичные SQL префиксы -->
+    <system:String x:Key="Str_Type_SqlTable">[ТАБЛИЦА]</system:String>
+    <system:String x:Key="Str_Type_SqlView">[ПРЕДСТАВЛЕНИЕ]</system:String>
+    <system:String x:Key="Str_Type_SqlFunction">[SQL ФУНКЦИЯ]</system:String>
+    <!-- Блок переименования модуля (Оверлей) -->
+    <system:String x:Key="Str_ModuleNameLabel">Название модуля:</system:String>
+    <system:String x:Key="Str_RenameTitle">Переименование модуля</system:String>
+    <system:String x:Key="Str_BtnCancel">Отмена</system:String>
+    <system:String x:Key="Str_BtnAccept">Принять</system:String>
+    <system:String x:Key="Str_TooltipRename">Переименовать модуль</system:String>
 </ResourceDictionary>

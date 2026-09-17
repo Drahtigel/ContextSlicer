@@ -274,18 +274,25 @@
 
                 <!-- Колонна 1: Выбор и удаление текущего модуля -->
                 <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Top" Margin="0,2,10,0">
-                    <TextBlock Text="{DynamicResource Str_SelectModule}" VerticalAlignment="Center" Margin="5,0,5,0"/>
+                    <TextBlock Text="{DynamicResource Str_ModuleNameLabel}" VerticalAlignment="Center" Margin="0,0,5,0" Grid.Column="0"/>
                     <ComboBox ItemsSource="{Binding Modules}"
                       SelectedItem="{Binding SelectedModule}"
                       DisplayMemberPath="ModuleName"
                       Width="150" Height="26" VerticalContentAlignment="Center"
                       IsEnabled="{Binding IsModuleSelectorEnabled}"/>
 
-                    <Button Content="" ToolTip="{DynamicResource Str_DeleteModule}"
+                    <Button Content="🗑" ToolTip="{DynamicResource Str_DeleteModule}"
                     Command="{Binding DeleteCurrentModuleCommand}"
                     Width="26" Height="26" Margin="5,0,0,0" Padding="0"
                     Foreground="#E53935" FontWeight="Bold"
                     IsEnabled="{Binding IsModuleSelectorEnabled}"/>
+                    <!-- Кнопка вызова безопасного оверлея редактирования -->
+                    <Button Content="✏" 
+        Command="{Binding ShowEditOverlayCommand}"
+        Width="26" Height="26" Margin="5,0,0,0" Padding="0,0,0,2"
+        Foreground="#007ACC" FontWeight="Bold" FontSize="13"
+        Background="Transparent" BorderBrush="{DynamicResource BorderBrush}"
+        IsEnabled="{Binding IsModuleSelectorEnabled}" ToolTip="{DynamicResource Str_TooltipRename}" />
                 </StackPanel>
 
                 <!-- Колонна 2: Название (с кнопкой Добавить) и формат файла -->
@@ -303,24 +310,11 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="{DynamicResource Str_ModuleName}" VerticalAlignment="Center" Width="105"/>
-                        <TextBox Grid.Column="1" x:Name="TxtModuleName" 
-         Text="{Binding ModuleNameInput, UpdateSourceTrigger=PropertyChanged}" 
-         LostFocus="TxtModuleName_LostFocus" Height="24" VerticalContentAlignment="Center">
-                            <TextBox.InputBindings>
-                                <KeyBinding Key="Enter" Command="{Binding UpdateCurrentModuleNameCommand}"/>
-                            </TextBox.InputBindings>
-                            <TextBox.Style>
-                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
-                                    <Style.Triggers>
-                                        <!-- Если флаг ошибки равен True, красим рамку в красный -->
-                                        <DataTrigger Binding="{Binding IsModuleNameInvalid}" Value="True">
-                                            <Setter Property="BorderBrush" Value="#E53935"/>
-                                            <Setter Property="BorderThickness" Value="1.5"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBox.Style>
-                        </TextBox>
+                        <!-- Переключено на изолированное свойство NewModuleNameInput -->
+                        <TextBox x:Name="TxtModuleName" 
+         Text="{Binding NewModuleNameInput, UpdateSourceTrigger=PropertyChanged}" 
+         Height="24" 
+         VerticalContentAlignment="Center"/>
                         <Button Grid.Column="2" Content="{DynamicResource Str_AddModule}" 
                         Command="{Binding CreateNewModuleCommand}" 
                         Padding="10,0" Height="24" Margin="8,0,0,0" FontWeight="Bold"/>
@@ -352,13 +346,13 @@
 
             <!-- ЛЕВАЯ ЧАСТЬ: Дерево файлов (Занимает Column 0) -->
             <GroupBox Header="{DynamicResource Str_FilesHeader}" Grid.Column="0" Margin="0,0,5,0">
-                <TreeView ItemsSource="{Binding RootNode.Children}">
+                <TreeView ItemsSource="{Binding RootNode.Children}" TreeViewItem.Expanded="TreeView_Expanded">
                     <TreeView.ContextMenu>
                         <ContextMenu Background="#252526" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
                             <MenuItem Header="{DynamicResource Str_MnuIgnoreItem}"
-                              Foreground="{DynamicResource TextBrush}" Background="#252526"
-                              Command="{Binding Path=PlacementTarget.DataContext.AddNodeToFiltersCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
-                              CommandParameter="{Binding Path=PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                      Foreground="{DynamicResource TextBrush}" Background="#252526"
+                      Command="{Binding Path=PlacementTarget.DataContext.AddNodeToFiltersCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                      CommandParameter="{Binding Path=PlacementTarget.SelectedItem, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                 <MenuItem.Icon>
                                     <Grid Visibility="Collapsed"/>
                                 </MenuItem.Icon>
@@ -366,14 +360,77 @@
                         </ContextMenu>
                     </TreeView.ContextMenu>
                     <TreeView.Resources>
+                        <!-- Универсальный иерархический шаблон для отображения файлов, папок и элементов кода -->
                         <HierarchicalDataTemplate DataType="{x:Type local:FileSystemNode}" ItemsSource="{Binding Children}">
-                            <Grid Background="Transparent">
-                                <StackPanel Orientation="Horizontal" Margin="2">
-                                    <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
-                                </StackPanel>
-                            </Grid>
+                            <StackPanel Orientation="Horizontal" Margin="2">
+                                <!-- 1. ЧЕКБОКС: Отображается для всех, кроме технической ноды LoadingStub... -->
+                                <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0">
+                                    <CheckBox.Style>
+                                        <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+                                            <Style.Triggers>
+                                                <!-- Если это узел загрузки — полностью убираем чекбокс с экрана -->
+                                                <DataTrigger Binding="{Binding Name}" Value="LoadingStub...">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </CheckBox.Style>
+                                </CheckBox>
+
+                                <!-- 2. ИНДИКАТОР ПРОГРЕССА: Показывается ТОЛЬКО для ноды LoadingStub... -->
+                                <ProgressBar IsIndeterminate="True" Width="50" Height="6" 
+                     VerticalAlignment="Center" Margin="2,0,10,0"
+                     Foreground="#007ACC" Background="#2D2D30" BorderThickness="0">
+                                    <ProgressBar.Style>
+                                        <Style TargetType="ProgressBar">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <!-- Включаем полосу прогресса только для строки загрузки -->
+                                                <DataTrigger Binding="{Binding Name}" Value="LoadingStub...">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ProgressBar.Style>
+                                </ProgressBar>
+
+                                <!-- 3. ЛОКАЛИЗОВАННЫЙ ПРЕФИКС СИНТАКСИСА ([КЛАСС], [МЕТОД]...) -->
+                                <TextBlock Text="{Binding TypePrefixText}" Foreground="#007ACC" FontWeight="SemiBold" Margin="0,0,5,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <!-- Скрываем префикс, если текста нет или если это нода загрузки -->
+                                                <Trigger Property="Text" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </Trigger>
+                                                <DataTrigger Binding="{Binding Name}" Value="LoadingStub...">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+
+                                <!-- 4. ОСНОВНОЙ ТЕКСТ (Имя файла, папки или надпись "Загрузка структуры...") -->
+                                <TextBlock VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                            <Setter Property="Text" Value="{Binding Name}"/>
+                                            <Style.Triggers>
+                                                <!-- Если это заглушка, подменяем техническое имя на локализованную красивую строку -->
+                                                <DataTrigger Binding="{Binding Name}" Value="LoadingStub...">
+                                                    <Setter Property="Text" Value="{DynamicResource Str_LoadingStub}"/>
+                                                    <Setter Property="Foreground" Value="#A0A0A0"/>
+                                                    <Setter Property="FontStyle" Value="Italic"/>
+                                                    <Setter Property="FontSize" Value="11"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
                         </HierarchicalDataTemplate>
+
                     </TreeView.Resources>
                 </TreeView>
             </GroupBox>
@@ -408,7 +465,7 @@
                 </GroupBox>
             </Grid>
         </Grid>
-        <!-- 4. БЛОК НИЖНИХ КНОПОК (ИСПРАВЛЕНО: Убран Style={x:Null}, мешавший обработке Hover) -->
+       
         <!-- 4. БЛОК НИЖНИХ КНОПОК И СТАТИСТИКИ КОНТЕКСТА -->
         <Grid Grid.Row="3" Margin="0,5,0,0">
             <Grid.RowDefinitions>
@@ -484,7 +541,55 @@
                 </Grid>
             </Border>
         </Grid>
+        <!-- ГЛОБАЛЬНЫЙ МОВАЛЬНЫЙ ОВЕРЛЕЙ ДЛЯ БЕЗОПАСНОГО ПЕРЕИМЕНОВАНИЯ МОДУЛЯ -->
+        <Grid Visibility="{Binding IsEditOverlayVisible, Converter={StaticResource BooleanToVisibilityConverter}, FallbackValue=Collapsed}">
+            <!-- Затемняющий задний фон (блокирует клики по основному окну) -->
+            <Border Background="#A0000000"/>
+
+            <!-- Центрированное модальное окошко -->
+            <Border Width="350" Height="140" 
+                Background="#252526" 
+                BorderBrush="#007ACC" BorderThickness="1.5" 
+                CornerRadius="5" 
+                HorizontalAlignment="Center" VerticalAlignment="Center"
+                Padding="15">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Заголовок окошка -->
+                    <TextBlock Grid.Row="0" Text="{DynamicResource Str_RenameTitle}" 
+           Foreground="{DynamicResource TextBrush}" 
+           FontWeight="SemiBold" FontSize="13" Margin="0,0,0,10"/>
+
+
+                    <!-- Поле ввода нового имени -->
+                    <TextBox Grid.Row="1" Text="{Binding EditModuleNameInput, UpdateSourceTrigger=PropertyChanged}"
+                         Height="26" VerticalContentAlignment="Center" Margin="0,5,0,5"
+                         Background="#1E1E1E" Foreground="White" BorderBrush="{DynamicResource BorderBrush}"/>
+
+                    <!-- Кнопки действий -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                        <!-- Кнопка Отмена -->
+                        <Button Content="{DynamicResource Str_BtnCancel}" Command="{Binding CancelEditOverlayCommand}"
+                            Width="75" Height="24" Margin="0,0,8,0"
+                            Background="Transparent" Foreground="{DynamicResource TextBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"/>
+
+                        <!-- Кнопка Принять -->
+                        <Button Content="{DynamicResource Str_BtnAccept}" Command="{Binding ConfirmRenameModuleCommand}"
+                            Width="75" Height="24" IsDefault="True"
+                            Background="#007ACC" Foreground="White" FontWeight="SemiBold"
+                            BorderThickness="0"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
+    <!-- Самый последний закрывающий тег главного окна -->
 </Window>
 
 

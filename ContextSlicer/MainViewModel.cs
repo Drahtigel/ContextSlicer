@@ -48,6 +48,11 @@ public partial class MainViewModel : ObservableObject
     // Внимательно проверьте написание этой переменной:
     [ObservableProperty]
     private ContextModule? _selectedModule;
+    private bool _isUpdatingFields = false;
+    [ObservableProperty] private string _newModuleNameInput = string.Empty;
+    // Редактирование названия модуля
+    [ObservableProperty] private bool _isEditOverlayVisible;
+    [ObservableProperty] private string _editModuleNameInput = string.Empty;
     // Одна универсальная команда для контекстного меню TreeView
     [CommunityToolkit.Mvvm.Input.RelayCommand]
     private void AddNodeToFilters(FileSystemNode? node)
@@ -117,8 +122,102 @@ public partial class MainViewModel : ObservableObject
         // или вернуть обратно те, что пользователь вручную удалил из списков!
         TriggerTreeRefresh();
     }
+    [RelayCommand]
+    private void ShowEditOverlay()
+    {
+        if (SelectedModule == null) return;
 
+        // Копируем текущее имя модуля в буферное поле ввода
+        EditModuleNameInput = SelectedModule.ModuleName;
+        IsEditOverlayVisible = true;
+    }
+    [RelayCommand]
+    private void CancelEditOverlay()
+    {
+        IsEditOverlayVisible = false;
+        IsModuleNameInvalid = false; // Сбрасываем красную рамку ошибки, если она была
+    }
+    [RelayCommand]
+    private void ConfirmRenameModule()
+    {
+        if (SelectedProject == null || SelectedModule == null) return;
 
+        string newName = EditModuleNameInput?.Trim() ?? string.Empty;
+
+        // 1. Проверка на пустую строку
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            System.Windows.MessageBox.Show("Имя модуля не может быть пустым!", "Ошибка валидации",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 2. Проверка на дубликаты
+        bool isDuplicate = SelectedProject.Modules.Any(m =>
+            m != SelectedModule &&
+            m.ModuleName.Equals(newName, StringComparison.OrdinalIgnoreCase));
+
+        if (isDuplicate)
+        {
+            System.Windows.MessageBox.Show($"Модуль с названием \"{newName}\" уже существует в этом проекте!", "Ошибка валидации",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 3. Проверка на спецсимволы файловой системы Windows
+        if (!IsValidName(newName, out string validationError))
+        {
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // ИСПРАВЛЕНО: Запоминаем ссылку на текущий переименовываемый модуль
+        var currentModule = SelectedModule;
+
+        _isUpdatingFields = true;
+        try
+        {
+            currentModule.ModuleName = newName;
+            currentModule.ContextFileName = $"{GetSafeFileName(newName)}.txt";
+            ContextFileName = currentModule.ContextFileName;
+            currentModule.ModuleRules = ModuleRules;
+
+            // Синхронизируем строку в коллекции
+            var index = Modules.IndexOf(currentModule);
+            if (index >= 0)
+            {
+                Modules[index] = currentModule;
+            }
+
+            ModuleNameInput = newName;
+        }
+        finally
+        {
+            _isUpdatingFields = false;
+        }
+
+        // ИСПРАВЛЕНО: Откладываем восстановление фокуса ComboBox на следующий такт UI-потока.
+        // Это гарантирует, что ComboBox выберет именно переименованный пункт, а не сбросится на индекс 0!
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _isUpdatingFields = true;
+            try
+            {
+                SelectedModule = currentModule;
+            }
+            finally
+            {
+                _isUpdatingFields = false;
+            }
+
+            // Принудительно заставляем селектор кнопок пересчитать состояние
+            OnPropertyChanged(nameof(IsModuleSelectorEnabled));
+        }), System.Windows.Threading.DispatcherPriority.Background);
+
+        // Закрываем оверлей и сохраняем проект на диск
+        IsEditOverlayVisible = false;
+        SilentSave();
+    }
 
     // Свойство доступности блока модулей (теперь со строгим уведомлением для интерфейса)
     // Настраиваемый черный список папок (дефолтные значения)
@@ -220,10 +319,8 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    public bool IsModuleSelectorEnabled
-    {
-        get => SelectedProject != null;
-    }
+    public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
+
 
     // Свойство для динамического вывода имени проекта в заголовок Expander
     // Динамическое свойство для заголовка экспандера (Исключает наложение текста)
@@ -310,22 +407,40 @@ public partial class MainViewModel : ObservableObject
     // Имя должно быть ОДИН В ОДИН как имя свойства после On...
     partial void OnSelectedModuleChanged(ContextModule? value)
     {
-        if (value != null)
+        if (_isUpdatingFields) return;
+
+        _isUpdatingFields = true;
+        try
         {
-            ModuleNameInput = value.ModuleName;
-            ContextFileName = value.ContextFileName;
-            ModuleRules = value.ModuleRules; // ЧИТАЕМ ПРАВИЛА МОДУЛЯ
-            RefreshTreeView(value.CheckedFiles);
+            if (value != null)
+            {
+                ModuleNameInput = value.ModuleName;
+                ContextFileName = value.ContextFileName;
+                ModuleRules = value.ModuleRules;
+
+                // 1. Строим базовую структуру файлов с диска
+                RefreshTreeView(value.CheckedFiles);
+
+                // 2. ИСПРАВЛЕНО: Мгновенно накатываем сохраненные структуры из JSON.
+                // Папки покроются закрашенными квадратиками в ту же секунду!
+                if (RootNode != null)
+                {
+                    FastPreloadSavedEntries(value, RootNode);
+                }
+            }
+            else
+            {
+                ModuleNameInput = string.Empty;
+                ContextFileName = string.Empty;
+                ModuleRules = string.Empty;
+                RefreshTreeView(new List<string>());
+            }
         }
-        else
+        finally
         {
-            ModuleNameInput = string.Empty;
-            ContextFileName = string.Empty;
-            ModuleRules = string.Empty;
-            RefreshTreeView(new List<string>());
+            _isUpdatingFields = false;
         }
     }
-
 
 
     private void RefreshTreeView(List<string> checkedFiles)
@@ -333,6 +448,12 @@ public partial class MainViewModel : ObservableObject
         if (Directory.Exists(RootPath))
         {
             RootNode = ContextBuilderService.BuildTree(RootPath, checkedFiles);
+
+            // НОВОЕ: Накатываем честный пересчет квадратиков для всех папок проекта
+            if (RootNode != null)
+            {
+                DeepVerifyCheckStates(RootNode);
+            }
         }
         else
         {
@@ -340,6 +461,7 @@ public partial class MainViewModel : ObservableObject
         }
         _ = RecalculateContextSizeAsync();
     }
+
 
     [RelayCommand]
     private void CreateNewProject()
@@ -385,20 +507,14 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        string name = string.IsNullOrWhiteSpace(ModuleNameInput)
+        // Читаем имя из ИЗОЛИРОВАННОГО поля ввода нового модуля
+        string name = string.IsNullOrWhiteSpace(NewModuleNameInput)
             ? $"Модуль {Modules.Count + 1}"
-            : ModuleNameInput.Trim();
+            : NewModuleNameInput.Trim();
 
-        // 1. ВАЛИДАЦИЯ НА СПЕЦСИМВОЛЫ
-        if (!IsValidName(name, out string validationError))
-        {
-            System.Windows.MessageBox.Show(validationError, "Ошибка валидации",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+        bool isDuplicate = SelectedProject.Modules.Any(m =>
+            m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
 
-        // 2. ПРОВЕРКА НА ДУБЛИКАТЫ
-        bool isDuplicate = Modules.Any(m => m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (isDuplicate)
         {
             System.Windows.MessageBox.Show($"Модуль с названием \"{name}\" уже существует в этом проекте!", "Внимание",
@@ -409,19 +525,161 @@ public partial class MainViewModel : ObservableObject
         var newModule = new ContextModule
         {
             ModuleName = name,
-            ContextFileName = $"{GetSafeFileName(name)}.txt"
+            ContextFileName = $"{GetSafeFileName(name)}.txt",
+            CheckedFiles = new List<string>(),
+            CheckedEntries = new List<SyntaxEntry>()
         };
 
-        Modules.Add(newModule);
-        SelectedModule = newModule;
-        RefreshTreeView(new List<string>());
+        _isUpdatingFields = true;
+        try
+        {
+            SelectedProject.Modules.Add(newModule);
+            Modules.Add(newModule);
 
-        // 3. ОЧИСТКА И СОХРАНЕНИЕ
-        ModuleNameInput = string.Empty;
-        IsModuleNameInvalid = false;
+            // Полностью пересоздаем корень дерева файлов для изоляции памяти
+            RootNode = new FileSystemNode
+            {
+                Name = System.IO.Path.GetFileName(SelectedProject.RootPath),
+                FullPath = SelectedProject.RootPath,
+                IsFile = false
+            };
+            OnPropertyChanged(nameof(RootNode));
+            RefreshTreeView(new List<string>());
+
+            // ОЧИЩАЕМ ИЗОЛИРОВАННОЕ ПОЛЕ. Теперь это никак не затронет ComboBox!
+            NewModuleNameInput = string.Empty;
+        }
+        finally
+        {
+            _isUpdatingFields = false;
+        }
+
+        // Мягко переключаем фокус в UI-потоке
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            SelectedModule = newModule;
+        }), System.Windows.Threading.DispatcherPriority.Background);
+
         SilentSave();
-        
     }
+
+    // public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
+
+
+    [RelayCommand]
+    private void UpdateCurrentModuleName()
+    {
+        // ЖЕСТКАЯ ЗАЩИТА: Если мы программно обновляем интерфейс, или проект/модуль не выбраны — выходим сразу
+        if (_isUpdatingFields || SelectedProject == null || SelectedModule == null) return;
+
+        string newName = ModuleNameInput?.Trim() ?? string.Empty;
+
+        // ГАРАНТИЯ СТАБИЛЬНОСТИ: Если поле ввода пустое, содержит дефолтное "Модуль X" 
+        // или полностью совпадает с текущим именем модуля — НЕМЕДЛЕННО прекращаем выполнение.
+        // Это заблокирует ложные срабатывания при очистке полей и смене фокуса!
+        if (string.IsNullOrWhiteSpace(newName) ||
+            newName.StartsWith("Модуль ", StringComparison.OrdinalIgnoreCase) ||
+            newName.Equals(SelectedModule.ModuleName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!IsValidName(newName, out string validationError))
+        {
+            IsModuleNameInvalid = true;
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации модуля", MessageBoxButton.OK, MessageBoxImage.Warning);
+            // Возвращаем старое имя обратно в поле, чтобы сбросить ошибку
+            _isUpdatingFields = true;
+            ModuleNameInput = SelectedModule.ModuleName;
+            _isUpdatingFields = false;
+            return;
+        }
+
+        IsModuleNameInvalid = false;
+
+        // Создаем локальную копию, защищенную от сбросов UI
+        var currentModule = SelectedModule;
+
+        currentModule.ModuleName = newName;
+        currentModule.ContextFileName = $"{GetSafeFileName(newName)}.txt";
+        ContextFileName = currentModule.ContextFileName;
+        currentModule.ModuleRules = ModuleRules;
+
+        var index = Modules.IndexOf(currentModule);
+        if (index >= 0)
+        {
+            _isUpdatingFields = true;
+            try
+            {
+                Modules[index] = currentModule;
+            }
+            finally
+            {
+                _isUpdatingFields = false;
+            }
+        }
+
+        SilentSave();
+    }
+
+
+    // Метод принудительной синхронизации текущего состояния дерева с моделью модуля
+    public void SyncTreeWithModule()
+    {
+        if (SelectedModule == null || RootNode == null) return;
+
+        // 1. В CheckedFiles сохраняем ТОЛЬКО файлы, выбранные на 100% целиком
+        var checkedFilesList = new List<string>();
+        var flatFilesList = new List<FileSystemNode>();
+        ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList); // Использует строго true
+        foreach (var node in flatFilesList)
+        {
+            checkedFilesList.Add(node.RelativePath);
+        }
+
+        // 2. В CheckedEntries собираем точечные элементы синтаксиса
+        var checkedEntriesList = new List<SyntaxEntry>();
+        var flatSyntaxList = new List<FileSystemNode>();
+        CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
+        foreach (var node in flatSyntaxList)
+        {
+            checkedEntriesList.Add(new SyntaxEntry
+            {
+                FilePath = node.RelativePath,
+                EntryPath = node.EntryPath,
+                DisplayName = node.Name,
+                Type = node.SyntaxType,
+                SpanInfo = node.SyntaxSpanInfo
+            });
+        }
+
+        SelectedModule.CheckedFiles = checkedFilesList;
+        SelectedModule.CheckedEntries = checkedEntriesList;
+    }
+
+
+
+
+    // Вспомогательный метод для глубокой очистки синтаксических нод
+    private void ClearSyntaxNodesRecursive(FileSystemNode node)
+    {
+        if (node == null) return;
+
+        // Проходим по детям с конца, чтобы безопасно удалять элементы
+        for (int i = node.Children.Count - 1; i >= 0; i--)
+        {
+            var child = node.Children[i];
+            if (child.IsSyntaxNode)
+            {
+                node.Children.RemoveAt(i);
+            }
+            else
+            {
+                ClearSyntaxNodesRecursive(child);
+            }
+        }
+    }
+
 
     // Универсальный метод валидации имени проекта или модуля
     private bool IsValidName(string name, out string errorMessage)
@@ -475,30 +733,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void UpdateCurrentModuleName()
-    {
-        if (SelectedProject == null || SelectedModule == null) return;
-        string newName = ModuleNameInput?.Trim() ?? string.Empty;
-        if (newName.Equals(SelectedModule.ModuleName, StringComparison.Ordinal)) return;
-
-        if (!IsValidName(newName, out string validationError))
-        {
-            IsModuleNameInvalid = true; // ВКЛЮЧАЕМ ПОДСВЕТКУ
-            System.Windows.MessageBox.Show(validationError, "Ошибка валидации модуля", MessageBoxButton.OK, MessageBoxImage.Warning);
-            ModuleNameInput = SelectedModule.ModuleName;
-            return;
-        }
-
-        IsModuleNameInvalid = false; // СБРАСЫВАЕМ ПОДСВЕТКУ
-        SelectedModule.ModuleName = newName;
-        SelectedModule.ContextFileName = $"{GetSafeFileName(newName)}.txt";
-        ContextFileName = SelectedModule.ContextFileName;
-
-        var index = Modules.IndexOf(SelectedModule);
-        if (index >= 0) { Modules[index] = SelectedModule; SelectedModule = Modules[index]; }
-        SelectedModule.ModuleRules = ModuleRules;
-        SilentSave();
-    }
+  
 
     partial void OnProjectNameInputChanged(string value) => IsProjectNameInvalid = false;
     partial void OnModuleNameInputChanged(string value) => IsModuleNameInvalid = false;
@@ -538,21 +773,45 @@ public partial class MainViewModel : ObservableObject
         if (SelectedModule != null && RootNode != null)
         {
             var checkedFilesList = new List<string>();
-            var flatList = new List<FileSystemNode>();
-            ContextBuilderService.GetCheckedFiles(RootNode, flatList);
-            foreach (var node in flatList)
+            var flatFilesList = new List<FileSystemNode>();
+
+            // Собираем вовлеченные файлы (полные и частичные)
+            ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList);
+            foreach (var node in flatFilesList)
             {
                 checkedFilesList.Add(node.RelativePath);
             }
 
+            // НОВОЕ: Собираем детальный список выбранных элементов синтаксиса
+            var checkedEntriesList = new List<SyntaxEntry>();
+            var flatSyntaxList = new List<FileSystemNode>();
+
+            // Рекурсивно собираем все синтаксические ноды с галочками из всего дерева
+            CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
+
+            foreach (var node in flatSyntaxList)
+            {
+                checkedEntriesList.Add(new SyntaxEntry
+                {
+                    FilePath = node.RelativePath,
+                    EntryPath = node.EntryPath,
+                    DisplayName = node.Name,
+                    Type = node.SyntaxType,
+                    SpanInfo = node.SyntaxSpanInfo
+                });
+            }
+
             SelectedModule.ModuleName = ModuleNameInput;
             SelectedModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
-            SelectedModule.ModuleRules = ModuleRules; // СОХРАНЯЕМ ПРАВИЛА МОДУЛЯ
-            SelectedModule.CheckedFiles = checkedFilesList;
+            SelectedModule.ModuleRules = ModuleRules;
+
+            SelectedModule.CheckedFiles = checkedFilesList; // Сохраняем базовые ключи-файлы
+            SelectedModule.CheckedEntries = checkedEntriesList; // Сохраняем детальный синтаксис!
 
             var mIdx = Modules.IndexOf(SelectedModule);
             if (mIdx >= 0) Modules[mIdx] = SelectedModule;
         }
+
 
         SelectedProject.ProjectName = ProjectNameInput;
         SelectedProject.RootPath = RootPath;
@@ -580,8 +839,35 @@ public partial class MainViewModel : ObservableObject
             if (showMessage) System.Windows.MessageBox.Show($"Ошибка сохранения JSON: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+    // Рекурсивный сбор всех выбранных элементов кода для сохранения в JSON
+    // ИСПРАВЛЕНО: Рекурсивный сбор синтаксических нод БЕЗ мусора и дубликатов
+    private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
+    {
+        // Если мы наткнулись на ФАЙЛ, и он выбран ПОЛНОСТЬЮ (True) —
+        // мы ОСТАНАВЛИВАЕМ рекурсию и не идем внутрь него! 
+        // Его внутренние методы и таблицы НЕ должны попадать в CheckedEntries, 
+        // так как файл идет в контекст целиком.
+        if (node.IsFile && node.IsChecked == true)
+        {
+            return;
+        }
 
- 
+        // Если это элемент синтаксиса (метод, класс, таблица) и на нем стоит галочка —
+        // мы берем его ТОЛЬКО в том случае, если его родительский файл выбран частично.
+        if (node.IsSyntaxNode && node.IsChecked == true)
+        {
+            result.Add(node);
+        }
+
+        // Идем глубже по дереву
+        foreach (var child in node.Children)
+        {
+            CollectAllCheckedSyntaxNodes(child, result);
+        }
+    }
+
+
+
     [RelayCommand]
     private void BrowseRootPath()
     {
@@ -714,11 +1000,32 @@ public partial class MainViewModel : ObservableObject
         _cts?.Cancel();
         ProgressText = "Отмена операции...";
     }
+    // Пробегает по всему дереву до самых глубоких файлов и заставляет папки рассчитать свои квадратики снизу вверх
+    private void DeepVerifyCheckStates(FileSystemNode node)
+    {
+        if (node == null) return;
+
+        // Сначала уходим на самую глубину к файлам и синтаксическим элементам
+        foreach (var child in node.Children)
+        {
+            DeepVerifyCheckStates(child);
+        }
+
+        // На обратном пути (снизу вверх) заставляем контейнеры обновить свое состояние
+        if (!node.IsFile && node.Children.Count > 0)
+        {
+            node.VerifyCheckState();
+        }
+    }
 
     // Полностью заменяем старую команду GenerateContext на асинхронную
     [RelayCommand]
     private async Task GenerateContext()
     {
+        if (SelectedModule == null || RootNode == null) return;
+
+        // ЖЕЛЕЗНАЯ СИНХРОНИЗАЦИЯ: Считываем все галочки с экрана прямо в модель модуля перед сборкой
+        SyncTreeWithModule();
         string extension = IsPdfFormat ? ".pdf" : ".txt";
         string safeFileName = GetSafeFileName(ModuleNameInput) + extension;
 
@@ -730,7 +1037,10 @@ public partial class MainViewModel : ObservableObject
         }
 
         var checkedFiles = new List<FileSystemNode>();
-        ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
+        // Было: ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
+        // Стало:
+        ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles); // Собирает и полные, и частичные файлы для ИИ!
+
         if (checkedFiles.Count == 0)
         {
             System.Windows.MessageBox.Show("Не выбрано ни одного файла для нарезки контекста.", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -762,12 +1072,12 @@ public partial class MainViewModel : ObservableObject
             if (IsPdfFormat)
             {
                 await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules,
-                    ModuleRules, IncludeDirectoryStructure, RootNode, progressHandler, _cts.Token); // ДОБАВЛЕН ФЛАГ
+                    ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token); // ДОБАВЛЕН СПИСОК
             }
             else
             {
                 await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules,
-                    ModuleRules, IncludeDirectoryStructure, RootNode, progressHandler, _cts.Token); // ДОБАВЛЕН ФЛАГ
+                    ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token); // ДОБАВЛЕН СПИСОК
             }
 
 
@@ -794,5 +1104,258 @@ public partial class MainViewModel : ObservableObject
             _cts = null;
         }
     }
+    // Асинхронно восстанавливает структуру только для тех файлов, которые были частично выбраны в проекте
+    private async Task RestoreSavedSyntaxStructureAsync(ContextModule module, FileSystemNode root)
+    {
+        if (module?.CheckedEntries == null || module.CheckedEntries.Count == 0 || root == null) return;
+
+        // Собираем уникальные относительные пути файлов, для которых есть сохраненные записи элементов
+        var filesToPreload = new HashSet<string>();
+        foreach (var entry in module.CheckedEntries)
+        {
+            if (!string.IsNullOrEmpty(entry.FilePath))
+            {
+                filesToPreload.Add(entry.FilePath);
+            }
+        }
+
+        // Запускаем фоновую задачу для каждого такого файла
+        foreach (var relPath in filesToPreload)
+        {
+            // Ищем узел этого файла в нашем построенном дереве
+            var fileNode = FindNodeByRelativePath(root, relPath);
+            if (fileNode != null)
+            {
+                // Асинхронно загружаем синтаксическую структуру файла в фоновом потоке
+                await PopulateSyntaxNodesAsync(fileNode);
+
+                // Точечно восстанавливаем галочки для элементов этого файла на основе JSON
+                RestoreEntriesCheckState(fileNode, module.CheckedEntries);
+            }
+        }
+    }
+
+    // Вспомогательный метод поиска узла файла в дереве по его относительному пути
+    private FileSystemNode? FindNodeByRelativePath(FileSystemNode current, string relativePath)
+    {
+        if (current.IsFile && current.RelativePath.Equals(relativePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return current;
+        }
+
+        foreach (var child in current.Children)
+        {
+            var found = FindNodeByRelativePath(child, relativePath);
+            if (found != null) return found;
+        }
+
+        return null;
+    }
+
+    // Рекурсивный метод простановки галочек сохраненным элементам
+    private void RestoreEntriesCheckState(FileSystemNode node, List<SyntaxEntry> savedEntries)
+    {
+        if (node.IsSyntaxNode)
+        {
+            // Проверяем, есть ли текущий элемент кода в списке сохраненных в JSON
+            var match = savedEntries.Find(e => e.FilePath.Equals(node.RelativePath, StringComparison.OrdinalIgnoreCase)
+                                            && e.EntryPath.Equals(node.EntryPath, StringComparison.Ordinal));
+            if (match != null)
+            {
+                // Восстанавливаем координаты и ставим галочку (без каскада вниз, чтобы не перетереть детей)
+                node.SyntaxSpanInfo = match.SpanInfo;
+                node.SetChecked(true, updateChildren: false, updateParent: true);
+            }
+        }
+
+        // Проходим по детям (вглубь классов к методам)
+        // Делаем копию коллекции, чтобы избежать ошибок изменения во время перебора
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
+        {
+            RestoreEntriesCheckState(child, savedEntries);
+        }
+    }
+    // Универсальный метод асинхронного парсинга файла и подселения синтаксических нод в дерево
+    public async Task PopulateSyntaxNodesAsync(FileSystemNode fileNode)
+    {
+        // ИСПРАВЛЕНО: Проверяем, есть ли среди детей нода-заглушка "LoadingStub..."
+        bool hasStub = false;
+        for (int i = 0; i < fileNode.Children.Count; i++)
+        {
+            if (fileNode.Children[i].Name == "LoadingStub...")
+            {
+                hasStub = true;
+                fileNode.Children.RemoveAt(i); // Удаляем техническую заглушку перед парсингом
+                break;
+            }
+        }
+
+        // Если заглушки нет И в списке уже есть элементы — значит, файл уже был полностью распарсен ранее, выходим
+        if (!hasStub && fileNode.Children.Count > 0) return;
+
+        string ext = System.IO.Path.GetExtension(fileNode.FullPath);
+        if (!SyntaxParserFactory.IsSupported(ext)) return;
+
+        var parser = SyntaxParserFactory.GetParser(ext);
+        if (parser == null) return;
+
+        List<SyntaxEntry> entries = await parser.ParseFileAsync(fileNode.FullPath, fileNode.RelativePath);
+
+        // Строим словарь уже существующих в UI виртуальных нод, чтобы не дублировать их при парсинге
+        var existingNodes = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
+        BuildExistingNodesMap(fileNode, existingNodes);
+
+        foreach (var entry in entries)
+        {
+            // Если нода уже была создана быстрым прелоадером из JSON — пропускаем её добавление
+            if (existingNodes.ContainsKey(entry.EntryPath)) continue;
+
+            var newNode = new FileSystemNode
+            {
+                Name = entry.DisplayName,
+                RelativePath = entry.FilePath,
+                FullPath = fileNode.FullPath,
+                IsFile = false,
+                IsSyntaxNode = true,
+                SyntaxType = entry.Type,
+                SyntaxSpanInfo = entry.SpanInfo,
+                EntryPath = entry.EntryPath,
+                Parent = fileNode
+            };
+
+            string parentEntryPath = string.Empty;
+            int lastDot = entry.EntryPath.LastIndexOf('.');
+            if (lastDot > 0)
+            {
+                parentEntryPath = entry.EntryPath.Substring(0, lastDot);
+            }
+
+            // Пытаемся подселить к существующему родителю в UI
+            if (!string.IsNullOrEmpty(parentEntryPath) && existingNodes.TryGetValue(parentEntryPath, out var parentUiNode))
+            {
+                newNode.Parent = parentUiNode;
+                parentUiNode.Children.Add(newNode);
+            }
+            else
+            {
+                fileNode.Children.Add(newNode);
+            }
+
+            existingNodes[entry.EntryPath] = newNode;
+
+            // Если файл или родительский класс выбран полностью — проставляем галочку новому методу
+            if (fileNode.IsChecked == true || (newNode.Parent != null && newNode.Parent.IsChecked == true))
+            {
+                newNode.SetChecked(true, updateChildren: false, updateParent: false);
+            }
+        }
+
+        fileNode.SetChecked(fileNode.IsChecked, updateChildren: false, updateParent: true);
+    }
+
+    // Вспомогательный метод для сбора карты уже существующих UI нод в файле
+    private void BuildExistingNodesMap(FileSystemNode node, Dictionary<string, FileSystemNode> map)
+    {
+        if (node.IsSyntaxNode && !string.IsNullOrEmpty(node.EntryPath))
+        {
+            map[node.EntryPath] = node;
+        }
+        foreach (var child in node.Children)
+        {
+            BuildExistingNodesMap(child, map);
+        }
+    }
+
+
+    private void FastPreloadSavedEntries(ContextModule module, FileSystemNode root)
+    {
+        if (module?.CheckedEntries == null || module.CheckedEntries.Count == 0 || root == null) return;
+
+        // Группируем элементы из JSON по файлам
+        var entriesByFile = new Dictionary<string, List<SyntaxEntry>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in module.CheckedEntries)
+        {
+            if (string.IsNullOrEmpty(entry.FilePath)) continue;
+            if (!entriesByFile.ContainsKey(entry.FilePath))
+            {
+                entriesByFile[entry.FilePath] = new List<SyntaxEntry>();
+            }
+            entriesByFile[entry.FilePath].Add(entry);
+        }
+
+        foreach (var kvp in entriesByFile)
+        {
+            var relPath = kvp.Key;
+            var savedEntries = kvp.Value;
+
+            var fileNode = FindNodeByRelativePath(root, relPath);
+            if (fileNode != null)
+            {
+                // Очищаем коллекцию от базовых заглушек сканирования диска
+                fileNode.Children.Clear();
+
+                var nodeMap = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
+
+                // 1. Строим каркас выбранных элементов синтаксиса из JSON
+                foreach (var entry in savedEntries)
+                {
+                    var newNode = new FileSystemNode
+                    {
+                        Name = entry.DisplayName,
+                        RelativePath = entry.FilePath,
+                        FullPath = fileNode.FullPath,
+                        IsFile = false,
+                        IsSyntaxNode = true,
+                        SyntaxType = entry.Type,
+                        SyntaxSpanInfo = entry.SpanInfo,
+                        EntryPath = entry.EntryPath,
+                        Parent = fileNode
+                    };
+
+                    string parentEntryPath = string.Empty;
+                    int lastDot = entry.EntryPath.LastIndexOf('.');
+                    if (lastDot > 0)
+                    {
+                        parentEntryPath = entry.EntryPath.Substring(0, lastDot);
+                    }
+
+                    if (!string.IsNullOrEmpty(parentEntryPath) && nodeMap.TryGetValue(parentEntryPath, out var parentUiNode))
+                    {
+                        newNode.Parent = parentUiNode;
+                        parentUiNode.Children.Add(newNode);
+                    }
+                    else
+                    {
+                        fileNode.Children.Add(newNode);
+                    }
+
+                    nodeMap[entry.EntryPath] = newNode;
+
+                    // Просто выставляем галочку элементу (без каскада, чтобы не трогать родительский файл раньше времени)
+                    newNode.SetChecked(true, updateChildren: false, updateParent: false);
+                }
+
+                // 2. БЕЗОПАСНО подсаживаем техническую ноду полосы прогресса в самый конец списка детей
+                fileNode.Children.Add(new FileSystemNode
+                {
+                    Name = "LoadingStub...",
+                    Parent = fileNode,
+                    IsFile = false,
+                    IsSyntaxNode = false
+                });
+
+                // 3. И ТОЛЬКО ТЕПЕРЬ вызываем честный пересчет состояния файла.
+                // Новая логика VerifyCheckState увидит заглушку и СТРОГО запретит файлу получить статус True!
+                fileNode.VerifyCheckState();
+            }
+        }
+
+        // Обновляем квадратики для родительских папок на диске снизу вверх
+        DeepVerifyCheckStates(root);
+    }
+
 
 }
+
+

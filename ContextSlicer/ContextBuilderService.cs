@@ -5,222 +5,374 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace ContextSlicer
+namespace ContextSlicer;
+
+// Структура для отправки отчетов о прогрессе в UI
+public struct ProgressReport
 {
-    // Структура для отправки отчетов о прогрессе в UI
-    public struct ProgressReport
+    public int CurrentIndex { get; set; }
+    public int TotalCount { get; set; }
+    public string CurrentFileName { get; set; }
+}
+
+public static class ContextBuilderService
+{
+    // Динамическая проверка папок по глобальному списку исключений
+    private static bool IsFolderExcluded(string folderName)
     {
-        public int CurrentIndex { get; set; }
-        public int TotalCount { get; set; }
-        public string CurrentFileName { get; set; }
+        if (GlobalFilterService.Current?.ExcludedFolders == null) return false;
+        foreach (var f in GlobalFilterService.Current.ExcludedFolders)
+        {
+            if (folderName.Equals(f, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
-    public static class ContextBuilderService
+    // Динамическая проверка расширений файлов по глобальному списку исключений
+    private static bool IsExtensionExcluded(string filePath)
     {
-        // Динамическая проверка папок по глобальному списку исключений
-        private static bool IsFolderExcluded(string folderName)
+        if (GlobalFilterService.Current?.ExcludedExtensions == null) return false;
+        string ext = Path.GetExtension(filePath);
+        foreach (var e in GlobalFilterService.Current.ExcludedExtensions)
         {
-            if (GlobalFilterService.Current?.ExcludedFolders == null) return false;
-            foreach (var f in GlobalFilterService.Current.ExcludedFolders)
+            if (ext.Equals(e, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    // Метод рекурсивного сканирования дерева
+    public static FileSystemNode BuildTree(string rootPath, List<string> savedCheckedFiles)
+    {
+        var rootInfo = new DirectoryInfo(rootPath);
+        var rootNode = new FileSystemNode { Name = rootInfo.Name, FullPath = rootInfo.FullName, RelativePath = "" };
+        FillNodesRecursive(rootInfo, rootNode, rootPath, savedCheckedFiles);
+        return rootNode;
+    }
+
+    private static void FillNodesRecursive(DirectoryInfo dir, FileSystemNode parentNode, string rootPath, List<string> savedCheckedFiles)
+    {
+        try
+        {
+            foreach (var subDir in dir.GetDirectories())
             {
-                if (folderName.Equals(f, StringComparison.OrdinalIgnoreCase)) return true;
+                if (IsFolderExcluded(subDir.Name)) continue;
+
+                var childNode = new FileSystemNode { Name = subDir.Name, FullPath = subDir.FullName, RelativePath = Path.GetRelativePath(rootPath, subDir.FullName), IsFile = false, Parent = parentNode };
+                parentNode.Children.Add(childNode);
+                FillNodesRecursive(subDir, childNode, rootPath, savedCheckedFiles);
             }
-            return false;
-        }
-
-        // Динамическая проверка расширений файлов по глобальному списку исключений
-        private static bool IsExtensionExcluded(string filePath)
-        {
-            if (GlobalFilterService.Current?.ExcludedExtensions == null) return false;
-            string ext = Path.GetExtension(filePath);
-            foreach (var e in GlobalFilterService.Current.ExcludedExtensions)
+            foreach (var file in dir.GetFiles())
             {
-                if (ext.Equals(e, StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            return false;
-        }
+                if (IsExtensionExcluded(file.FullName)) continue;
+                var relPath = Path.GetRelativePath(rootPath, file.FullName);
 
-        // Метод рекурсивного сканирования дерева
-        public static FileSystemNode BuildTree(string rootPath, List<string> savedCheckedFiles)
-        {
-            var rootInfo = new DirectoryInfo(rootPath);
-            var rootNode = new FileSystemNode { Name = rootInfo.Name, FullPath = rootInfo.FullName, RelativePath = "" };
-            FillNodesRecursive(rootInfo, rootNode, rootPath, savedCheckedFiles);
-            return rootNode;
-        }
-
-        private static void FillNodesRecursive(DirectoryInfo dir, FileSystemNode parentNode, string rootPath, List<string> savedCheckedFiles)
-        {
-            try
-            {
-                foreach (var subDir in dir.GetDirectories())
+                var childNode = new FileSystemNode
                 {
-                    if (IsFolderExcluded(subDir.Name)) continue;
+                    Name = file.Name,
+                    FullPath = file.FullName,
+                    RelativePath = relPath,
+                    IsFile = true,
+                    Parent = parentNode
+                };
 
-                    var childNode = new FileSystemNode { Name = subDir.Name, FullPath = subDir.FullName, RelativePath = Path.GetRelativePath(rootPath, subDir.FullName), IsFile = false, Parent = parentNode };
-                    parentNode.Children.Add(childNode);
-                    FillNodesRecursive(subDir, childNode, rootPath, savedCheckedFiles);
-                }
-                foreach (var file in dir.GetFiles())
+                if (savedCheckedFiles.Contains(relPath)) childNode.IsChecked = true;
+
+                // НОВОЕ: Если расширение файла поддерживается синтаксическими парсерами,
+                // добавляем фиктивную ноду-заглушку, чтобы WPF отобразил стрелочку раскрытия узла [▶]
+                string ext = Path.GetExtension(file.FullName);
+                if (SyntaxParserFactory.IsSupported(ext))
                 {
-                    // ИСПРАВЛЕНО: Если расширение файла находится в глобальном черном списке, мы его даже не добавляем в дерево!
-                    if (IsExtensionExcluded(file.FullName)) continue;
-
-                    var relPath = Path.GetRelativePath(rootPath, file.FullName);
-                    var childNode = new FileSystemNode { Name = file.Name, FullPath = file.FullName, RelativePath = relPath, IsFile = true, Parent = parentNode };
-                    if (savedCheckedFiles.Contains(relPath)) childNode.IsChecked = true;
-                    parentNode.Children.Add(childNode);
+                    childNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = childNode });
                 }
-            }
-            catch (UnauthorizedAccessException) { }
-        }
 
-        public static void GetCheckedFiles(FileSystemNode node, List<FileSystemNode> result)
+                parentNode.Children.Add(childNode);
+            }
+
+        }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    public static void GetCheckedFiles(FileSystemNode node, List<FileSystemNode> result)
+    {
+        // ИСПРАВЛЕНО: Собираем файл только в том случае, если он выбран ПОЛНОСТЬЮ (true).
+        // Если он выбран частично (null), мы его здесь НЕ берем, так как его куски будут сохранены в CheckedEntries.
+        if (node.IsFile && node.IsChecked == true)
         {
-            if (node.IsFile && node.IsChecked == true)
+            if (!IsExtensionExcluded(node.FullPath))
             {
-                // ИСПРАВЛЕНО: Проверяем расширение по динамическому глобальному списку
-                if (!IsExtensionExcluded(node.FullPath))
-                {
-                    result.Add(node);
-                }
+                if (!result.Contains(node)) result.Add(node);
             }
-            foreach (var child in node.Children) GetCheckedFiles(child, result);
         }
-
-        // Асинхронная сборка текста с поддержкой прогресса и отмены операции
-        public static async Task<StringBuilder> BuildTextContentAsync(
-    string projectRules,
-    string moduleRules,
-    bool includeDirectoryStructure, // ДОБАВЛЕН ПАРАМЕТР
-    List<FileSystemNode> checkedFiles,
-    IProgress<ProgressReport> progress,
-    CancellationToken token)
+        foreach (var child in node.Children)
         {
-            var sb = new StringBuilder();
+            GetCheckedFiles(child, result);
+        }
+    }
+    // Добавьте этот метод в ContextBuilderService.cs для генератора и сохранения
+    public static void GetCheckedFilesExtended(FileSystemNode node, List<FileSystemNode> result)
+    {
+        // Берем файл, если он выбран полностью (true) ИЛИ частично (null)
+        if (node.IsFile && (node.IsChecked == true || node.IsChecked == null))
+        {
+            if (!IsExtensionExcluded(node.FullPath))
+            {
+                if (!result.Contains(node)) result.Add(node);
+            }
+        }
+        foreach (var child in node.Children)
+        {
+            GetCheckedFilesExtended(child, result);
+        }
+    }
+
+    // Асинхронная сборка текста с поддержкой прогресса и отмены операции
+    public static async Task<StringBuilder> BuildTextContentAsync(
+string projectRules,
+string moduleRules,
+bool includeDirectoryStructure,
+List<FileSystemNode> checkedFiles,
+List<SyntaxEntry> savedEntries, // ДОБАВЛЕН ЖЕСТКИЙ ИСТОЧНИК ДАННЫХ
+IProgress<ProgressReport> progress,
+CancellationToken token)
+    {
+        var sb = new StringBuilder();
+
+        bool hasProjectRules = !string.IsNullOrWhiteSpace(projectRules);
+        bool hasModuleRules = !string.IsNullOrWhiteSpace(moduleRules);
+
+        if (hasProjectRules || hasModuleRules)
+        {
             sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С КОДОМ ===");
-            sb.AppendLine("<project_rules>");
-            sb.AppendLine(projectRules ?? "");
-            sb.AppendLine("</project_rules>");
-            sb.AppendLine();
-
-            sb.AppendLine("<module_rules>");
-            sb.AppendLine(moduleRules ?? "");
-            sb.AppendLine("</module_rules>");
-            sb.AppendLine();
-
-            // УПРАВЛЕНИЕ ВЫВОДОМ СТРУКТУРЫ КАТАЛОГОВ
-            if (includeDirectoryStructure)
+            if (hasProjectRules)
             {
-                sb.AppendLine("=== СТРУКТУРА ВЫБРАННЫХ КАТАЛОГОВ ===");
-                foreach (var file in checkedFiles)
-                {
-                    if (file == null) continue;
-                    token.ThrowIfCancellationRequested();
-                    sb.AppendLine($" [Файл] {file.RelativePath ?? ""}");
-                }
+                sb.AppendLine("<project_rules>");
+                sb.AppendLine(projectRules.Trim());
+                sb.AppendLine("</project_rules>");
                 sb.AppendLine();
             }
-
-            sb.AppendLine("=== СОДЕРЖИМОЕ ФАЙЛОВ ===");
-           
-            int total = checkedFiles.Count;
-
-            for (int i = 0; i < total; i++)
+            if (hasModuleRules)
             {
-                var file = checkedFiles[i];
-                if (file == null || string.IsNullOrEmpty(file.FullPath)) continue;
+                sb.AppendLine("<module_rules>");
+                sb.AppendLine(moduleRules.Trim());
+                sb.AppendLine("</module_rules>");
+                sb.AppendLine();
+            }
+        }
 
-                progress?.Report(new ProgressReport
-                {
-                    CurrentIndex = i + 1,
-                    TotalCount = total,
-                    CurrentFileName = file.RelativePath ?? ""
-                });
+        if (includeDirectoryStructure)
+        {
+            sb.AppendLine("=== СТРУКТУРА ВЫБРАННЫХ КАТАЛОГОВ ===");
+            foreach (var file in checkedFiles)
+            {
+                if (file == null) continue;
+                token.ThrowIfCancellationRequested();
+                sb.AppendLine($" [Файл] {file.RelativePath ?? ""}");
+            }
+            sb.AppendLine();
+        }
 
-                sb.AppendLine($"---{file.RelativePath ?? ""}---");
-                try
+        sb.AppendLine("=== СОДЕРЖИМОЕ ФАЙЛОВ ===");
+        int total = checkedFiles.Count;
+        for (int i = 0; i < total; i++)
+        {
+            var file = checkedFiles[i];
+            if (file == null || string.IsNullOrEmpty(file.FullPath)) continue;
+
+            progress?.Report(new ProgressReport
+            {
+                CurrentIndex = i + 1,
+                TotalCount = total,
+                CurrentFileName = file.RelativePath ?? ""
+            });
+
+            sb.AppendLine($"---{file.RelativePath ?? ""}---");
+
+            try
+            {
+                token.ThrowIfCancellationRequested();
+
+                // СЦЕНАРИЙ А: Файл выбран полностью
+                if (file.IsChecked == true)
                 {
-                    token.ThrowIfCancellationRequested();
                     string content = await File.ReadAllTextAsync(file.FullPath, Encoding.UTF8, token);
                     sb.AppendLine(content ?? "");
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
+                // СЦЕНАРИЙ Б: Файл выбран частично (Интегрирован прямой поиск по JSON-конфигу)
+                else
                 {
-                    sb.AppendLine($"[Ошибка чтения файла: {ex.Message}]");
-                }
-                sb.AppendLine();
-            }
-            return sb;
-        }
+                    sb.AppendLine($"// [Внимание ИИ: Из данного файла извлечены только выбранные структуры и функции]");
 
-        // Асинхронная генерация PDF с поддержкой отмены и прогресса
-        public static async Task GeneratePdfContextFileAsync(
-     string outputPath, string fileName, string projectRules, string moduleRules,
-     bool includeDirectoryStructure, FileSystemNode rootNode, IProgress<ProgressReport> progress, CancellationToken token)
-        {
-            var checkedFiles = new List<FileSystemNode>();
-            GetCheckedFiles(rootNode, checkedFiles);
+                    // Фильтруем записи синтаксиса конкретно для этого файла из сохраненного конфига модуля
+                    var fileEntries = savedEntries?.FindAll(e => e.FilePath.Equals(file.RelativePath, StringComparison.OrdinalIgnoreCase)) ?? new List<SyntaxEntry>();
 
-            var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure, checkedFiles, progress, token);
-            string textData = sb.ToString();
-
-            token.ThrowIfCancellationRequested();
-
-            var document = new MigraDoc.DocumentObjectModel.Document();
-            var section = document.AddSection();
-
-            section.PageSetup.TopMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
-            section.PageSetup.BottomMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
-            section.PageSetup.LeftMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
-            section.PageSetup.RightMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
-
-            var style = document.Styles["Normal"];
-            if (style?.Font != null)
-            {
-                style.Font.Name = "Courier New";
-                style.Font.Size = 9;
-            }
-
-            using (var reader = new StringReader(textData))
-            {
-                string? line;
-                while ((line = await reader.ReadLineAsync()) != null)
-                {
-                    token.ThrowIfCancellationRequested();
-                    var paragraph = section.AddParagraph(line);
-                    if (string.IsNullOrWhiteSpace(line))
+                    if (fileEntries.Count > 0)
                     {
-                        paragraph.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(6);
+                        string fullContent = await File.ReadAllTextAsync(file.FullPath, Encoding.UTF8, token);
+
+                        foreach (var entry in fileEntries)
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            string[] parts = entry.SpanInfo.Split(',');
+                            if (parts.Length == 2 && int.TryParse(parts[0], out int start) && int.TryParse(parts[1], out int length))
+                            {
+                                if (start >= 0 && start + length <= fullContent.Length)
+                                {
+                                    string fragment = fullContent.Substring(start, length);
+
+                                    // Формируем красивый тег с типом элемента синтаксиса и его внутренностями
+                                    string tag = entry.Type.ToString().ToLower();
+                                    sb.AppendLine($"<{tag} path=\"{entry.EntryPath}\">");
+                                    sb.AppendLine(fragment);
+                                    sb.AppendLine($"</{tag}>");
+                                    sb.AppendLine();
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine("// [Элементы не выбраны]");
                     }
                 }
             }
-
-            string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".pdf") ? fileName : fileName + ".pdf");
-
-            await Task.Run(() =>
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
             {
-                var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
-                renderer.Document = document;
-                renderer.RenderDocument();
-                renderer.PdfDocument.Save(fullOutputPath);
-            }, token);
+                sb.AppendLine($"[Ошибка чтения файла: {ex.Message}]");
+            }
+            sb.AppendLine();
         }
 
-        // Асинхронная генерация обычного TXT
-        public static async Task GenerateContextFileAsync(
-    string outputPath, string fileName, string projectRules, string moduleRules,
-    bool includeDirectoryStructure, FileSystemNode rootNode, IProgress<ProgressReport> progress, CancellationToken token)
+        return sb;
+    }
+
+    // Вспомогательный метод для рекурсивного сбора чекнутых синтаксических нод внутри файла
+    private static void FindCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
+    {
+        if (node.IsSyntaxNode && node.IsChecked == true)
         {
-            var checkedFiles = new List<FileSystemNode>();
-            GetCheckedFiles(rootNode, checkedFiles);
-            var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure, checkedFiles, progress, token);
-            // ... далее без изменений ...
-
-            string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".txt") ? fileName : fileName + ".txt");
-
-            await File.WriteAllTextAsync(fullOutputPath, sb.ToString(), Encoding.UTF8, token);
+            result.Add(node);
+        }
+        foreach (var child in node.Children)
+        {
+            FindCheckedSyntaxNodes(child, result);
         }
     }
+
+
+    // Асинхронная генерация PDF с поддержкой отмены и прогресса
+    // Асинхронная генерация PDF с поддержкой отмены, прогресса и синтаксических записей
+    public static async Task GeneratePdfContextFileAsync(
+        string outputPath,
+        string fileName,
+        string projectRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        FileSystemNode rootNode,
+        List<SyntaxEntry> savedEntries, // ИСПРАВЛЕНО: Добавлен параметр в сигнатуру метода
+        IProgress<ProgressReport> progress,
+        CancellationToken token)
+    {
+        var checkedFiles = new List<FileSystemNode>();
+        GetCheckedFilesExtended(rootNode, checkedFiles); // Используем расширенный сбор для корректного прогресс-бара
+
+        // ИСПРАВЛЕНО: Передаем savedEntries, полученный из параметров метода
+        var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure,
+            checkedFiles, savedEntries, progress, token);
+
+        string textData = sb.ToString();
+        token.ThrowIfCancellationRequested();
+
+        var document = new MigraDoc.DocumentObjectModel.Document();
+        var section = document.AddSection();
+        section.PageSetup.TopMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
+        section.PageSetup.BottomMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
+        section.PageSetup.LeftMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
+        section.PageSetup.RightMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(1);
+
+        var style = document.Styles["Normal"];
+        if (style?.Font != null)
+        {
+            style.Font.Name = "Courier New";
+            style.Font.Size = 9;
+        }
+
+        using (var reader = new StringReader(textData))
+        {
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
+            {
+                token.ThrowIfCancellationRequested();
+                var paragraph = section.AddParagraph(line);
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    paragraph.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(6);
+                }
+            }
+        }
+
+        // Формируем полный путь к итоговому файлу
+        string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".pdf") ? fileName : fileName + ".pdf");
+
+        // ИСПРАВЛЕНО: Защита от блокировки процесса при перезаписи существующего PDF
+        if (File.Exists(fullOutputPath))
+        {
+            try
+            {
+                // Пытаемся физически удалить старую версию файла перед тем, как рендерер начнет монопольно писать данные
+                File.Delete(fullOutputPath);
+            }
+            catch (IOException)
+            {
+                // Если файл открыт в стороннем просмотрщике (например, в Acrobat Reader или браузере)
+                System.Windows.MessageBox.Show(
+                    $"Не удалось перезаписать файл.\nВозможно, он открыт в другой программе (PDF-просмотрщике или браузере).\n\nЗакройте файл и повторите попытку.",
+                    "Ошибка доступа к файлу",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+                return; // Мягко выходим из метода, предотвращая жесткий крах всего приложения
+            }
+            catch (Exception ex)
+            {
+                System.Windows.MessageBox.Show($"Не удалось подготовить файл к перезаписи: {ex.Message}", "Ошибка",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                return;
+            }
+        }
+
+        // Запускаем асинхронный рендеринг документа в PDF
+        await Task.Run(() =>
+        {
+            var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
+            renderer.Document = document;
+            renderer.RenderDocument();
+            renderer.PdfDocument.Save(fullOutputPath); // ТЕПЕРЬ ЗАПИСЬ ВСЕГДА ИДЕТ В ЧИСТЫЙ ПУТЬ БЕЗ КОНФЛИКТОВ!
+        }, token);
+    }
+
+
+    // Асинхронная генерация обычного TXT с поддержкой синтаксических записей
+    public static async Task GenerateContextFileAsync(
+        string outputPath,
+        string fileName,
+        string projectRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        FileSystemNode rootNode,
+        List<SyntaxEntry> savedEntries, // ИСПРАВЛЕНО: Добавлен параметр в сигнатуру метода
+        IProgress<ProgressReport> progress,
+        CancellationToken token)
+    {
+        var checkedFiles = new List<FileSystemNode>();
+        GetCheckedFilesExtended(rootNode, checkedFiles); // Используем расширенный сбор
+
+        // ИСПРАВЛЕНО: Передаем savedEntries, полученный из параметров метода
+        var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure,
+            checkedFiles, savedEntries, progress, token);
+
+        string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".txt") ? fileName : fileName + ".txt");
+        await File.WriteAllTextAsync(fullOutputPath, sb.ToString(), Encoding.UTF8, token);
+    }
+
 }
