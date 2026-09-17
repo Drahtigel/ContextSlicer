@@ -23,6 +23,11 @@
 * **Скрытие структуры:** Если чекбокс структуры каталогов снят, блок структуры полностью исключается из итогового TXT/PDF файла без добавления лишних комментариев.
 * **Локализация:** Добавлены все новые строковые ресурсы в файлы русской (`Strings.ru.xaml`) и английской (`Strings.en.xaml`) локализации.
 
+### 5. Подсчет объема контекста (Символы и Токены)
+* **Динамический счетчик:** В нижнюю панель приложения встроен асинхронный калькулятор объема данных, отображающий общее количество символов и примерный вес в токенах.
+* **Адаптивная математика:** Расчет учитывает специфику кодирования текста ИИ: вес исходного кода оценивается из расчета ~4 символа на токен, а кириллические правила (Prompt) — из расчета ~2 символа на токен.
+* **Связь с настройками UI:** Счетчик мгновенно и асинхронно реагирует на любые изменения: ввод символов в полях правил, выбор/снятие чекбоксов в дереве файлов, а также на переключение флага «Включать структуру каталогов» (вес строк структуры динамически добавляется или вычитается из общего объема).
+
 ---
 
 ## [English]
@@ -47,3 +52,8 @@
 * **Block Isolation:** Updated text compilation logic in `ContextBuilderService`. Project and module rules are now wrapped in XML tags (`<project_rules>` and `<module_rules>`) for better LLM context understanding.
 * **Structure Hiding:** If the directory structure checkbox is unchecked, the entire folder tree section is completely removed from the output TXT/PDF file without adding unnecessary meta-comments.
 * **Localization:** Added all new string assets to the Russian (`Strings.ru.xaml`) and English (`Strings.en.xaml`) localization resource dictionaries.
+
+### 5. Context Volume Calculation (Characters & Tokens)
+* **Dynamic Counter:** An asynchronous data volume calculator has been integrated into the bottom panel, displaying the total number of characters and the estimated token weight.
+* **Adaptive Mathematics:** The calculation accounts for LLM tokenization specifics: source code is estimated at ~4 characters per token, while Cyrillic prompt rules are evaluated at ~2 characters per token.
+* **UI State Binding:** The counter instantly and asynchronously updates on any user action: typing in rules textboxes, checking/unchecking files in the tree, or toggling the "Include directory structure" checkbox (the tree structure weight is dynamically added or omitted).

@@ -41,7 +41,10 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _contextFileName = string.Empty;
     [ObservableProperty]
     private ObservableCollection<ContextModule> _modules = new();
-
+    //Подсчёт токенов
+    [ObservableProperty] private long _totalCharacters;
+    [ObservableProperty] private long _estimatedTokens;
+    [ObservableProperty] private bool _isCalculatingSize;
     // Внимательно проверьте написание этой переменной:
     [ObservableProperty]
     private ContextModule? _selectedModule;
@@ -125,6 +128,72 @@ public partial class MainViewModel : ObservableObject
     // Настраиваемый черный список мусорных и бинарных расширений (дефолтные значения)
     [ObservableProperty]
     private string _excludedExtensionsInput = ".png, .jpg, .jpeg, .gif, .ico, .bmp, .webp, .mp3, .wav, .ogg, .flac, .aac, .mp4, .avi, .mkv, .mov, .zip, .rar, .7z, .tar, .gz, .dll, .exe, .pdb, .suo, .user, .fbx, .obj, .max, .blend, .3ds, .bak, .tmp, .temp, .log";
+
+    [RelayCommand]
+    private async Task RecalculateContextSizeAsync()
+    {
+        if (RootNode == null)
+        {
+            TotalCharacters = 0;
+            EstimatedTokens = 0;
+            return;
+        }
+
+        IsCalculatingSize = true;
+
+        await Task.Run(() =>
+        {
+            var checkedFiles = new List<FileSystemNode>();
+            ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
+
+            long charCount = 0;
+
+            // 1. Считаем символы в выбранных файлах исходного кода
+            foreach (var file in checkedFiles)
+            {
+                if (file != null && File.Exists(file.FullPath))
+                {
+                    try
+                    {
+                        var fi = new FileInfo(file.FullPath);
+                        charCount += fi.Length;
+
+                        // НОВОЕ: Если структура каталогов включена, добавляем вес строк разметки структуры папок
+                        if (IncludeDirectoryStructure)
+                        {
+                            // Примерно 15 символов на строку вида " [Файл] Relative\Path\File.cs\n"
+                            charCount += (file.RelativePath?.Length ?? 0) + 10;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // 2. Добавляем символы из полей правил и служебную разметку тегов
+            charCount += (PromptRules?.Length ?? 0);
+            charCount += (ModuleRules?.Length ?? 0);
+            charCount += 150; // Запас на служебные теги
+
+            // 3. Считаем токены. Код (английский) ~ 4 символа на токен. 
+            // Русский текст в правилах ~ 2 символа на токен. Делаем взвешенную безопасную оценку:
+            long rulesLength = (PromptRules?.Length ?? 0) + (ModuleRules?.Length ?? 0);
+            long codeLength = charCount - rulesLength;
+            if (codeLength < 0) codeLength = 0;
+
+            long tokensFromCode = codeLength / 4;
+            long tokensFromRules = rulesLength / 2; // Более тяжелые токены для кириллицы
+
+            TotalCharacters = charCount;
+            EstimatedTokens = tokensFromCode + tokensFromRules;
+        });
+
+        IsCalculatingSize = false;
+    }
+    partial void OnPromptRulesChanged(string value) => _ = RecalculateContextSizeAsync();
+    partial void OnModuleRulesChanged(string value) => _ = RecalculateContextSizeAsync();
+    // Автоматический пересчет токенов при клике на чекбокс структуры каталогов
+    partial void OnIncludeDirectoryStructureChanged(bool value) => _ = RecalculateContextSizeAsync();
+
 
     [RelayCommand]
     private void DeleteCurrentModule()
@@ -269,6 +338,7 @@ public partial class MainViewModel : ObservableObject
         {
             RootNode = null;
         }
+        _ = RecalculateContextSizeAsync();
     }
 
     [RelayCommand]

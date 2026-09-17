@@ -39,5 +39,8 @@
     <system:String x:Key="Str_DeleteModule">Удалить модуль</system:String>
     <system:String x:Key="Str_GlobalFilters">Глобальные фильтры</system:String>
     <system:String x:Key="Str_MnuIgnoreItem">Добавить в фильтр исключений</system:String>
-
+    <!-- Расчёт токенов-->
+    <system:String x:Key="Str_StatsChars">Всего символов:</system:String>
+    <system:String x:Key="Str_StatsTokens">Примерно токенов:</system:String>
+    <system:String x:Key="Str_Calculating">Пересчет объема...</system:String>
 </ResourceDictionary>

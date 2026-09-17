@@ -408,18 +408,52 @@
                 </GroupBox>
             </Grid>
         </Grid>
-
-
         <!-- 4. БЛОК НИЖНИХ КНОПОК (ИСПРАВЛЕНО: Убран Style={x:Null}, мешавший обработке Hover) -->
+        <!-- 4. БЛОК НИЖНИХ КНОПОК И СТАТИСТИКИ КОНТЕКСТА -->
         <Grid Grid.Row="3" Margin="0,5,0,0">
+            <Grid.RowDefinitions>
+                <!-- Верхняя строка: Информация об объеме контекста -->
+                <RowDefinition Height="Auto"/>
+                <!-- Нижняя строка: Главные кнопки действий -->
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.3*"/>
                 <ColumnDefinition Width="2*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Сохраняем индивидуальные цвета кнопок, но убираем x:Null, чтобы системный триггер шаблона работал корректно -->
-            <Button Content="{DynamicResource Str_SaveProject}" Command="{Binding SaveProjectCommand}" Grid.Column="0" Height="48" Margin="0,0,5,0" Background="#4CAF50" Foreground="White" FontWeight="Bold" FontSize="13"/>
-            <Button Content="{DynamicResource Str_Generate}" Command="{Binding GenerateContextCommand}" Grid.Column="1" Height="48" Margin="5,0,0,0" Background="#007ACC" Foreground="White" FontWeight="Bold" FontSize="13"/>
+            <!-- Панель статистики токенов (Занимает Row 0, растянута на обе колонки) -->
+            <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" 
+            Background="{DynamicResource ControlBackgroundBrush}" 
+            BorderBrush="{DynamicResource BorderBrush}" 
+            BorderThickness="1" CornerRadius="3" Margin="0,0,0,8" Padding="10,6">
+                <Grid>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                        <!-- Символы -->
+                        <TextBlock Text="{DynamicResource Str_StatsChars}" FontWeight="SemiBold" Margin="0,0,5,0"/>
+                        <TextBlock Text="{Binding TotalCharacters, StringFormat='{}{0:N0}'}" Foreground="#007ACC" FontWeight="Bold" Margin="0,0,25,0"/>
+
+                        <!-- Токены -->
+                        <TextBlock Text="{DynamicResource Str_StatsTokens}" FontWeight="SemiBold" Margin="0,0,5,0"/>
+                        <TextBlock Text="{Binding EstimatedTokens, StringFormat='~{0:N0}'}" Foreground="#4CAF50" FontWeight="Bold"/>
+                    </StackPanel>
+
+                    <!-- Индикатор расчета (показывается только во время асинхронного подсчета) -->
+                    <TextBlock Text="{DynamicResource Str_Calculating}" 
+                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                       Foreground="#A0A0A0" FontStyle="Italic"
+                       Visibility="{Binding IsCalculatingSize, Converter={StaticResource BooleanToVisibilityConverter}, FallbackValue=Collapsed}"/>
+                </Grid>
+            </Border>
+
+            <!-- Главные кнопки управления (Перенесены на Row 1) -->
+            <Button Content="{DynamicResource ResourceKey=Str_SaveProject}" Command="{Binding SaveProjectCommand}"
+            Grid.Row="1" Grid.Column="0" Height="44" Margin="0,0,5,0" Background="#4CAF50" Foreground="White"
+            FontWeight="Bold" FontSize="13"/>
+
+            <Button Content="{DynamicResource Str_Generate}" Command="{Binding GenerateContextCommand}"
+            Grid.Row="1" Grid.Column="1" Height="44" Margin="5,0,0,0" Background="#007ACC" Foreground="White"
+            FontWeight="Bold" FontSize="13"/>
         </Grid>
 
         <!-- ОВЕРЛЕЙ ПРОГРЕССА -->

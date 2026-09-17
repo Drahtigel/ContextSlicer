@@ -39,5 +39,8 @@
     <system:String x:Key="Str_DeleteModule">Delete Module</system:String>
     <system:String x:Key="Str_GlobalFilters">Global Filters</system:String>
     <system:String x:Key="Str_MnuIgnoreItem">Add to exclusion filter</system:String>
-
+    <!-- Расчёт токенов-->
+    <system:String x:Key="Str_StatsChars">Total characters:</system:String>
+    <system:String x:Key="Str_StatsTokens">Estimated tokens:</system:String>
+    <system:String x:Key="Str_Calculating">Calculating size...</system:String>
 </ResourceDictionary>
