@@ -210,7 +210,7 @@ public partial class MainViewModel : ObservableObject
     {
         if (value != null)
         {
-            ProjectNameInput = value?.ProjectName ?? string.Empty;
+            ProjectNameInput = value.ProjectName;
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
            
