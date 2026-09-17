@@ -5,7 +5,9 @@
     <system:String x:Key="Str_ProjManagement">1. Управление Проектом</system:String>
     <system:String x:Key="Str_ModuleManagement">2. Нарезаемые Модули / Контексты ИИ</system:String>
     <system:String x:Key="Str_FilesHeader">Файлы текущего модуля</system:String>
-    <system:String x:Key="Str_PromptHeader">Общие правила написания кода (Prompt)</system:String>
+    <system:String x:Key="Str_PromptHeader">Общие правила проекта (Prompt)</system:String>
+    <system:String x:Key="Str_ModulePromptHeader">Правила текущего модуля (Prompt)</system:String>
+
 
     <!-- Элементы блока проекта -->
     <system:String x:Key="Str_SelectProj">Выбор проекта:</system:String>
@@ -16,6 +18,7 @@
     <system:String x:Key="Str_RootPath">Корневая папка (код):</system:String>
     <system:String x:Key="Str_OutputPath">Выходная папка (ТЗ):</system:String>
     <system:String x:Key="Str_Browse">Обзор...</system:String>
+    <system:String x:Key="Str_IncludeStructure">Включать структуру каталогов</system:String>
 
     <!-- Элементы блока модулей -->
     <system:String x:Key="Str_SelectModule">Выбор модуля:</system:String>

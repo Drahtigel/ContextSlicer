@@ -90,26 +90,40 @@ namespace ContextSlicer
 
         // Асинхронная сборка текста с поддержкой прогресса и отмены операции
         public static async Task<StringBuilder> BuildTextContentAsync(
-            string rules,
-            List<FileSystemNode> checkedFiles,
-            IProgress<ProgressReport> progress,
-            CancellationToken token)
+    string projectRules,
+    string moduleRules,
+    bool includeDirectoryStructure, // ДОБАВЛЕН ПАРАМЕТР
+    List<FileSystemNode> checkedFiles,
+    IProgress<ProgressReport> progress,
+    CancellationToken token)
         {
             var sb = new StringBuilder();
             sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С КОДОМ ===");
-            sb.AppendLine(rules ?? "");
+            sb.AppendLine("<project_rules>");
+            sb.AppendLine(projectRules ?? "");
+            sb.AppendLine("</project_rules>");
             sb.AppendLine();
 
-            sb.AppendLine("=== СТРУКТУРА ВЫБРАННЫХ КАТАЛОГОВ ===");
-            foreach (var file in checkedFiles)
-            {
-                if (file == null) continue;
-                token.ThrowIfCancellationRequested();
-                sb.AppendLine($"  [Файл] {file.RelativePath ?? ""}");
-            }
+            sb.AppendLine("<module_rules>");
+            sb.AppendLine(moduleRules ?? "");
+            sb.AppendLine("</module_rules>");
             sb.AppendLine();
+
+            // УПРАВЛЕНИЕ ВЫВОДОМ СТРУКТУРЫ КАТАЛОГОВ
+            if (includeDirectoryStructure)
+            {
+                sb.AppendLine("=== СТРУКТУРА ВЫБРАННЫХ КАТАЛОГОВ ===");
+                foreach (var file in checkedFiles)
+                {
+                    if (file == null) continue;
+                    token.ThrowIfCancellationRequested();
+                    sb.AppendLine($" [Файл] {file.RelativePath ?? ""}");
+                }
+                sb.AppendLine();
+            }
 
             sb.AppendLine("=== СОДЕРЖИМОЕ ФАЙЛОВ ===");
+           
             int total = checkedFiles.Count;
 
             for (int i = 0; i < total; i++)
@@ -143,17 +157,13 @@ namespace ContextSlicer
 
         // Асинхронная генерация PDF с поддержкой отмены и прогресса
         public static async Task GeneratePdfContextFileAsync(
-            string outputPath,
-            string fileName,
-            string rules,
-            FileSystemNode rootNode,
-            IProgress<ProgressReport> progress,
-            CancellationToken token)
+     string outputPath, string fileName, string projectRules, string moduleRules,
+     bool includeDirectoryStructure, FileSystemNode rootNode, IProgress<ProgressReport> progress, CancellationToken token)
         {
             var checkedFiles = new List<FileSystemNode>();
             GetCheckedFiles(rootNode, checkedFiles);
 
-            var sb = await BuildTextContentAsync(rules, checkedFiles, progress, token);
+            var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure, checkedFiles, progress, token);
             string textData = sb.ToString();
 
             token.ThrowIfCancellationRequested();
@@ -200,17 +210,14 @@ namespace ContextSlicer
 
         // Асинхронная генерация обычного TXT
         public static async Task GenerateContextFileAsync(
-            string outputPath,
-            string fileName,
-            string rules,
-            FileSystemNode rootNode,
-            IProgress<ProgressReport> progress,
-            CancellationToken token)
+    string outputPath, string fileName, string projectRules, string moduleRules,
+    bool includeDirectoryStructure, FileSystemNode rootNode, IProgress<ProgressReport> progress, CancellationToken token)
         {
             var checkedFiles = new List<FileSystemNode>();
             GetCheckedFiles(rootNode, checkedFiles);
+            var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure, checkedFiles, progress, token);
+            // ... далее без изменений ...
 
-            var sb = await BuildTextContentAsync(rules, checkedFiles, progress, token);
             string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".txt") ? fileName : fileName + ".txt");
 
             await File.WriteAllTextAsync(fullOutputPath, sb.ToString(), Encoding.UTF8, token);

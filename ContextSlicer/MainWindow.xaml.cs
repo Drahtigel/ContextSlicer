@@ -105,5 +105,22 @@ namespace ContextSlicer
                 vm.OnWindowClosing();
             }
         }
+
+        private void TxtProjectName_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is MainViewModel vm && vm.UpdateCurrentProjectNameCommand.CanExecute(null))
+            {
+                vm.UpdateCurrentProjectNameCommand.Execute(null);
+            }
+        }
+
+        private void TxtModuleName_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is MainViewModel vm && vm.UpdateCurrentModuleNameCommand.CanExecute(null))
+            {
+                vm.UpdateCurrentModuleNameCommand.Execute(null);
+            }
+        }
+
     }
 }

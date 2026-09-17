@@ -25,9 +25,11 @@ public partial class MainViewModel : ObservableObject
     // Список модулей выбранного проекта
     [ObservableProperty] private bool _isPdfFormat; // Если true — рендерим в PDF, если false — в TXT
     [ObservableProperty] private bool _isProjectBlockExpanded;
-
-
+    [ObservableProperty] private bool _isProjectNameInvalid;
+    [ObservableProperty] private bool _isModuleNameInvalid;
+    [ObservableProperty] private bool _includeDirectoryStructure = true;
     [ObservableProperty] private FileSystemNode? _rootNode;
+    [ObservableProperty] private string _moduleRules = string.Empty;
 
     // Поля ввода UI
     [ObservableProperty] private string _projectNameInput = string.Empty;
@@ -192,6 +194,7 @@ public partial class MainViewModel : ObservableObject
         string appDir = Path.Combine(appData, "ContextSlicer");
         Directory.CreateDirectory(appDir);
         _configFilePath = Path.Combine(appDir, "projects.json");
+        IncludeDirectoryStructure = Properties.Settings.Default.IncludeDirectoryStructure;
 
         IsAutoSaveEnabled = Properties.Settings.Default.AutoSaveOnExit;
         IsDarkTheme = Properties.Settings.Default.IsDarkTheme;
@@ -207,10 +210,13 @@ public partial class MainViewModel : ObservableObject
     {
         if (value != null)
         {
-            ProjectNameInput = value.ProjectName;
+            ProjectNameInput = value?.ProjectName ?? string.Empty;
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
+           
             PromptRules = value.PromptRules;
+            IncludeDirectoryStructure = value.IncludeDirectoryStructure; // ЧИТАЕМ НАСТРОЙКУ
+
 
             // Загружаем список модулей этого проекта
             Modules = new ObservableCollection<ContextModule>(value.Modules);
@@ -239,17 +245,18 @@ public partial class MainViewModel : ObservableObject
         {
             ModuleNameInput = value.ModuleName;
             ContextFileName = value.ContextFileName;
-
-            // Перерисовываем дерево и проставляем галочки, сохраненные для ЭТОГО модуля
+            ModuleRules = value.ModuleRules; // ЧИТАЕМ ПРАВИЛА МОДУЛЯ
             RefreshTreeView(value.CheckedFiles);
         }
         else
         {
             ModuleNameInput = string.Empty;
             ContextFileName = string.Empty;
+            ModuleRules = string.Empty;
             RefreshTreeView(new List<string>());
         }
     }
+
 
 
     private void RefreshTreeView(List<string> checkedFiles)
@@ -267,29 +274,67 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void CreateNewProject()
     {
-        // Исправлено: если имя введено в поле — берем его, иначе даем дефолтное
         string name = string.IsNullOrWhiteSpace(ProjectNameInput)
             ? $"Проект {Projects.Count + 1}"
-            : ProjectNameInput;
+            : ProjectNameInput.Trim();
+
+        // 1. ВАЛИДАЦИЯ НА СПЕЦСИМВОЛЫ
+        if (!IsValidName(name, out string validationError))
+        {
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 2. ПРОВЕРКА НА ДУБЛИКАТЫ
+        bool isDuplicate = Projects.Any(p => p.ProjectName.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (isDuplicate)
+        {
+            System.Windows.MessageBox.Show($"Проект с названием \"{name}\" уже существует!", "Внимание",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         var newProject = new ProjectConfig { ProjectName = name };
         Projects.Add(newProject);
         SelectedProject = newProject;
+
+        // 3. ОЧИСТКА И СОХРАНЕНИЕ
+        ProjectNameInput = string.Empty;
+        IsProjectNameInvalid = false;
+        SilentSave();
     }
 
     [RelayCommand]
-   
     private void CreateNewModule()
     {
         if (SelectedProject == null)
         {
-            System.Windows.MessageBox.Show("Сначала выберите или создайте проект!", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show("Сначала выберите или создайте проект!", "Внимание",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         string name = string.IsNullOrWhiteSpace(ModuleNameInput)
             ? $"Модуль {Modules.Count + 1}"
-            : ModuleNameInput;
+            : ModuleNameInput.Trim();
+
+        // 1. ВАЛИДАЦИЯ НА СПЕЦСИМВОЛЫ
+        if (!IsValidName(name, out string validationError))
+        {
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 2. ПРОВЕРКА НА ДУБЛИКАТЫ
+        bool isDuplicate = Modules.Any(m => m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (isDuplicate)
+        {
+            System.Windows.MessageBox.Show($"Модуль с названием \"{name}\" уже существует в этом проекте!", "Внимание",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
 
         var newModule = new ContextModule
         {
@@ -299,11 +344,94 @@ public partial class MainViewModel : ObservableObject
 
         Modules.Add(newModule);
         SelectedModule = newModule;
-
-        // СБРОС ЧЕКБОКСОВ: Принудительно очищаем дерево папок для нового модуля
         RefreshTreeView(new List<string>());
+
+        // 3. ОЧИСТКА И СОХРАНЕНИЕ
+        ModuleNameInput = string.Empty;
+        IsModuleNameInvalid = false;
+        SilentSave();
+        
     }
 
+    // Универсальный метод валидации имени проекта или модуля
+    private bool IsValidName(string name, out string errorMessage)
+    {
+        errorMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            errorMessage = "Имя не может быть пустым или состоять только из пробелов.";
+            return false;
+        }
+
+        // Получаем массив символов, запрещенных в именах файлов/папок Windows
+        char[] invalidChars = System.IO.Path.GetInvalidFileNameChars();
+
+        // Дополнительно можно явно дописать проверку на популярные проблемные символы, 
+        // если GetInvalidFileNameChars их не перекрывает в некоторых контекстах
+        foreach (char c in invalidChars)
+        {
+            if (name.Contains(c))
+            {
+                errorMessage = $"Имя содержит недопустимый символ '{c}'.\nЗапрещено использовать: \\ / : * ? \" < > |";
+                return false;
+            }
+        }
+
+        return true;
+    }
+    [RelayCommand]
+    private void UpdateCurrentProjectName()
+    {
+        if (SelectedProject == null) return;
+        string newName = ProjectNameInput?.Trim() ?? string.Empty;
+        if (newName.Equals(SelectedProject.ProjectName, StringComparison.Ordinal)) return;
+
+        if (!IsValidName(newName, out string validationError))
+        {
+            IsProjectNameInvalid = true; // ВКЛЮЧАЕМ ПОДСВЕТКУ
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации проекта", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ProjectNameInput = SelectedProject.ProjectName;
+            return;
+        }
+
+        IsProjectNameInvalid = false; // СБРАСЫВАЕМ ПОДСВЕТКУ
+        SelectedProject.ProjectName = newName;
+
+        var index = Projects.IndexOf(SelectedProject);
+        if (index >= 0) { Projects[index] = SelectedProject; SelectedProject = Projects[index]; }
+        OnPropertyChanged(nameof(DisplayProjectName));
+        SilentSave();
+    }
+
+    [RelayCommand]
+    private void UpdateCurrentModuleName()
+    {
+        if (SelectedProject == null || SelectedModule == null) return;
+        string newName = ModuleNameInput?.Trim() ?? string.Empty;
+        if (newName.Equals(SelectedModule.ModuleName, StringComparison.Ordinal)) return;
+
+        if (!IsValidName(newName, out string validationError))
+        {
+            IsModuleNameInvalid = true; // ВКЛЮЧАЕМ ПОДСВЕТКУ
+            System.Windows.MessageBox.Show(validationError, "Ошибка валидации модуля", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ModuleNameInput = SelectedModule.ModuleName;
+            return;
+        }
+
+        IsModuleNameInvalid = false; // СБРАСЫВАЕМ ПОДСВЕТКУ
+        SelectedModule.ModuleName = newName;
+        SelectedModule.ContextFileName = $"{GetSafeFileName(newName)}.txt";
+        ContextFileName = SelectedModule.ContextFileName;
+
+        var index = Modules.IndexOf(SelectedModule);
+        if (index >= 0) { Modules[index] = SelectedModule; SelectedModule = Modules[index]; }
+        SelectedModule.ModuleRules = ModuleRules;
+        SilentSave();
+    }
+
+    partial void OnProjectNameInputChanged(string value) => IsProjectNameInvalid = false;
+    partial void OnModuleNameInputChanged(string value) => IsModuleNameInvalid = false;
 
     // Изменим сигнатуру метода, добавив необязательный параметр showMessage
 
@@ -349,6 +477,7 @@ public partial class MainViewModel : ObservableObject
 
             SelectedModule.ModuleName = ModuleNameInput;
             SelectedModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
+            SelectedModule.ModuleRules = ModuleRules; // СОХРАНЯЕМ ПРАВИЛА МОДУЛЯ
             SelectedModule.CheckedFiles = checkedFilesList;
 
             var mIdx = Modules.IndexOf(SelectedModule);
@@ -359,6 +488,8 @@ public partial class MainViewModel : ObservableObject
         SelectedProject.RootPath = RootPath;
         SelectedProject.OutputPath = OutputPath;
         SelectedProject.PromptRules = PromptRules;
+        SelectedProject.IncludeDirectoryStructure = IncludeDirectoryStructure; // СОХРАНЯЕМ НАСТРОЙКУ
+        
         SelectedProject.Modules = Modules.ToList();
 
         var pIdx = Projects.IndexOf(SelectedProject);
@@ -444,6 +575,7 @@ public partial class MainViewModel : ObservableObject
         // Сохраняем состояние чекбокса в Settings приложения
         Properties.Settings.Default.AutoSaveOnExit = IsAutoSaveEnabled;
         Properties.Settings.Default.IsProjectBlockExpanded = IsProjectBlockExpanded;
+        Properties.Settings.Default.IncludeDirectoryStructure = IncludeDirectoryStructure; // СОХРАНЯЕМ ГЛОБАЛЬНО
         Properties.Settings.Default.Save();
 
         // Если чекбокс активен — сохраняем проект без вывода MessageBox
@@ -556,14 +688,19 @@ public partial class MainViewModel : ObservableObject
         {
             string fullPath = Path.Combine(OutputPath, safeFileName);
 
+            // Найдите блок генерации (IsPdfFormat) и замените передачу параметров:
             if (IsPdfFormat)
             {
-                await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules, RootNode, progressHandler, _cts.Token);
+                await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules,
+                    ModuleRules, IncludeDirectoryStructure, RootNode, progressHandler, _cts.Token); // ДОБАВЛЕН ФЛАГ
             }
             else
             {
-                await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules, RootNode, progressHandler, _cts.Token);
+                await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules,
+                    ModuleRules, IncludeDirectoryStructure, RootNode, progressHandler, _cts.Token); // ДОБАВЛЕН ФЛАГ
             }
+
+
 
             // Автооткрытие Проводника Windows (оставляем без изменений)
             if (File.Exists(fullPath))

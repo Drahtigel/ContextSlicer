@@ -5,8 +5,10 @@
     <system:String x:Key="Str_ProjManagement">1. Project Management</system:String>
     <system:String x:Key="Str_ModuleManagement">2. Slicing Modules / AI Contexts</system:String>
     <system:String x:Key="Str_FilesHeader">Current Module Files</system:String>
-    <system:String x:Key="Str_PromptHeader">General Code Rules (Prompt)</system:String>
-
+    <!-- Разделенные заголовки правил prompt -->
+    <system:String x:Key="Str_PromptHeader">Project General Rules (Prompt)</system:String>
+    <system:String x:Key="Str_ModulePromptHeader">Current Module Rules (Prompt)</system:String>
+    
     <!-- Элементы блока проекта -->
     <system:String x:Key="Str_SelectProj">Select Project:</system:String>
     <system:String x:Key="Str_ProjName">Project Name:</system:String>
@@ -16,6 +18,7 @@
     <system:String x:Key="Str_RootPath">Root folder (code):</system:String>
     <system:String x:Key="Str_OutputPath">Output folder (contexts):</system:String>
     <system:String x:Key="Str_Browse">Browse...</system:String>
+    <system:String x:Key="Str_IncludeStructure">Include directory structure</system:String>
 
     <!-- Элементы блока модулей -->
     <system:String x:Key="Str_SelectModule">Select Module:</system:String>
