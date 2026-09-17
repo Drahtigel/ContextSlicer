@@ -566,25 +566,41 @@
            FontWeight="SemiBold" FontSize="13" Margin="0,0,0,10"/>
 
 
-                    <!-- Поле ввода нового имени -->
+                    <!-- Поле ввода нового имени внутри оверлея с автофокусом -->
                     <TextBox Grid.Row="1" Text="{Binding EditModuleNameInput, UpdateSourceTrigger=PropertyChanged}"
-                         Height="26" VerticalContentAlignment="Center" Margin="0,5,0,5"
-                         Background="#1E1E1E" Foreground="White" BorderBrush="{DynamicResource BorderBrush}"/>
+         Height="26" VerticalContentAlignment="Center" Margin="0,5,0,5"
+         Background="#1E1E1E" Foreground="White" BorderBrush="{DynamicResource BorderBrush}">
+                        <TextBox.Style>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                <Style.Triggers>
+                                    <!-- Магия WPF: Когда оверлей становится видимым, текстовое поле автоматически забирает фокус клавиатуры! -->
+                                    <DataTrigger Binding="{Binding IsEditOverlayVisible}" Value="True">
+                                        <Setter Property="FocusManager.FocusedElement" Value="{Binding RelativeSource={RelativeSource Self}}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBox.Style>
+                    </TextBox>
 
-                    <!-- Кнопки действий -->
+                    <!-- Кнопки действий внутри оверлея -->
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
-                        <!-- Кнопка Отмена -->
-                        <Button Content="{DynamicResource Str_BtnCancel}" Command="{Binding CancelEditOverlayCommand}"
-                            Width="75" Height="24" Margin="0,0,8,0"
-                            Background="Transparent" Foreground="{DynamicResource TextBrush}"
-                            BorderBrush="{DynamicResource BorderBrush}"/>
+                        <!-- Кнопка Отмена (Добавлено IsCancel="True" для биндинга клавиши Esc) -->
+                        <Button Content="{DynamicResource Str_BtnCancel}" 
+            Command="{Binding CancelEditOverlayCommand}"
+            IsCancel="True"
+            Width="75" Height="24" Margin="0,0,8,0"
+            Background="Transparent" Foreground="{DynamicResource TextBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"/>
 
-                        <!-- Кнопка Принять -->
-                        <Button Content="{DynamicResource Str_BtnAccept}" Command="{Binding ConfirmRenameModuleCommand}"
-                            Width="75" Height="24" IsDefault="True"
-                            Background="#007ACC" Foreground="White" FontWeight="SemiBold"
-                            BorderThickness="0"/>
+                        <!-- Кнопка Принять (Добавлено IsDefault="True" для биндинга клавиши Enter) -->
+                        <Button Content="{DynamicResource Str_BtnAccept}" 
+            Command="{Binding ConfirmRenameModuleCommand}" 
+            IsDefault="True"
+            Width="75" Height="24"
+            Background="#007ACC" Foreground="White" FontWeight="SemiBold"
+            BorderThickness="0"/>
                     </StackPanel>
+
                 </Grid>
             </Border>
         </Grid>
