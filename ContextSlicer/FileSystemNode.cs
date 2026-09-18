@@ -28,21 +28,23 @@ public class FileSystemNode : INotifyPropertyChanged
         {
             if (!IsSyntaxNode) return string.Empty;
 
-            // Интеллектуальный поиск SQL префиксов по содержанию расширения файла
+            // НОВОЕ: Мгновенный перехват литературных типов художественного текста
+            if (SyntaxType == EntryType.Tab) return "Str_Type_Tab";
+            if (SyntaxType == EntryType.Heading) return "Str_Type_Heading";
+
+            // Существующая логика интеллектуального поиска SQL префиксов
             string ext = System.IO.Path.GetExtension(FullPath);
             if (ext.Equals(".sql", StringComparison.OrdinalIgnoreCase))
             {
                 if (SyntaxType == EntryType.Function) return "Str_Type_SqlFunction";
-                if (Name.Contains("[ПРЕДСТАВЛЕНИЕ]") || Name.Contains("[VIEW]")) return "Str_Type_SqlView"; // для надежности фолбэка
-
-                // Смотрим, какой тип был записан, или вычисляем по структуре:
+                if (Name.Contains("[ПРЕДСТАВЛЕНИЕ]") || Name.Contains("[VIEW]")) return "Str_Type_SqlView";
                 return "Str_Type_SqlTable";
             }
 
+            // Базовый фолбэк для стандартных типов исходного кода (.cs, .js и т.д.)
             return $"Str_Type_{SyntaxType}";
         }
     }
-
 
     public bool? IsChecked
     {

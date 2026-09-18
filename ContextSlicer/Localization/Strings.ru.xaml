@@ -62,4 +62,15 @@
     <system:String x:Key="Str_BtnCancel">Отмена</system:String>
     <system:String x:Key="Str_BtnAccept">Принять</system:String>
     <system:String x:Key="Str_TooltipRename">Переименовать модуль</system:String>
+    <!-- Подсказки для кнопок управления проектами и модулями -->
+    <system:String x:Key="Str_TooltipProjectEdit">Настройки проекта</system:String>
+    <system:String x:Key="Str_TooltipProjectSync">Синхронизировать / Перечитать источник</system:String>
+    <system:String x:Key="Str_TooltipModuleAdd">Добавить новый модуль</system:String>
+    <system:String x:Key="Str_TooltipModuleEdit">Переименовать текущий модуль</system:String>
+    <system:String x:Key="Str_TooltipModuleDelete">Удалить текущий модуль</system:String>
+    <system:String x:Key="Str_TextPart">ЧАСТЬ</system:String>
+    <system:String x:Key="Str_TextPage">Страница</system:String>
+    <!-- Сокращенные префиксы художественного текста -->
+    <system:String x:Key="Str_Type_Tab">[ВКЛ]</system:String>
+    <system:String x:Key="Str_Type_Heading">[ГЛ]</system:String>
 </ResourceDictionary>

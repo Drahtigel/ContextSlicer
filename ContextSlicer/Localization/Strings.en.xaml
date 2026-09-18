@@ -63,4 +63,16 @@
     <system:String x:Key="Str_BtnCancel">Cancel</system:String>
     <system:String x:Key="Str_BtnAccept">Accept</system:String>
     <system:String x:Key="Str_TooltipRename">Rename module</system:String>
+    <!-- Tooltips for project and module control buttons -->
+    <system:String x:Key="Str_TooltipProjectEdit">Project settings</system:String>
+    <system:String x:Key="Str_TooltipProjectSync">Synchronize / Reread source</system:String>
+    <system:String x:Key="Str_TooltipModuleAdd">Add new module</system:String>
+    <system:String x:Key="Str_TooltipModuleEdit">Rename current module</system:String>
+    <system:String x:Key="Str_TooltipModuleDelete">Delete current module</system:String>
+    <!-- Localization of text document nodes -->
+    <system:String x:Key="Str_TextPart">PART</system:String>
+    <system:String x:Key="Str_TextPage">Page</system:String>
+    <!-- Shortened prefixes for literary text -->
+    <system:String x:Key="Str_Type_Tab">[TAB]</system:String>
+    <system:String x:Key="Str_Type_Heading">[CH]</system:String>
 </ResourceDictionary>

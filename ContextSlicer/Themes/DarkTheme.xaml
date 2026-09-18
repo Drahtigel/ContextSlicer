@@ -7,6 +7,15 @@
     <SolidColorBrush x:Key="TextBrush" Color="#F1F1F1"/>
     <SolidColorBrush x:Key="SplitterBrush" Color="#3E3E42"/>
     <SolidColorBrush x:Key="BorderBrush" Color="#434346"/>
+    <!-- Синхронизация псевдонимов кистей для нового интерфейса (Темная тема) -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#007ACC"/>
+    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#252526"/>
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#2D2D30"/>
+
+    <!-- Новые адаптивные цвета для контуров кнопок управления (ОК) -->
+    <SolidColorBrush x:Key="ButtonEditBrush" Color="#007ACC"/>
+    <SolidColorBrush x:Key="ButtonSyncBrush" Color="#4CAF50"/>
+    <SolidColorBrush x:Key="ButtonDeleteBrush" Color="#E53935"/>
 
     <!-- Принудительные стили для ВСЕХ элементов на форме в тёмной теме -->
     <Style TargetType="TextBlock">
@@ -55,4 +64,24 @@
         <Setter Property="BorderBrush" Value="#434346"/>
         <Setter Property="Padding" Value="8,2"/>
     </Style>
+    <!-- Стили элементов управления для Темной Темы -->
+    <Style x:Key="ThemeComboBoxItemStyle" TargetType="ComboBoxItem">
+        <Setter Property="Background" Value="#252526"/>
+        <Setter Property="Foreground" Value="#F1F1F1"/>
+    </Style>
+
+    <Style x:Key="ThemeProjectEditButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="#007ACC"/>
+        <Setter Property="Background" Value="Transparent"/>
+    </Style>
+    <Style x:Key="ThemeProjectSyncButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="#4CAF50"/>
+        <Setter Property="Background" Value="Transparent"/>
+    </Style>
+    <Style x:Key="ThemeModuleDeleteButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Foreground" Value="#E53935"/>
+        <Setter Property="Background" Value="Transparent"/>
+    </Style>
+  
+
 </ResourceDictionary>

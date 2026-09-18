@@ -17,21 +17,47 @@ public enum EntryType
     Struct,
     Interface,
     Enum,
-    Function, // Для методов C# и функций JS/TS
-    Section   // Для HTML-тегов, CSS-селекторов и регионов
+    Function,
+    Section,
+    Property,
+
+    // ДОБАВЛЕНО: Новые типы для структуры художественных текстов
+    Tab,     // Для вкладок Google Docs
+    Heading  // Для заголовков глав рассказа (Heading 1-4)
 }
+
 
 // Модель элемента структуры для хранения на диске и отображения в UI
 public class SyntaxEntry
 {
     public string FilePath { get; set; } = string.Empty;
-    public string EntryPath { get; set; } = string.Empty;
+    public string EntryPath { get; set; } = string.Empty; // Иерархический путь, например "Вкладка 1/Глава 1"
     public string DisplayName { get; set; } = string.Empty;
-    public EntryType Type { get; set; }
-    public string SpanInfo { get; set; } = string.Empty;
+    public EntryType Type { get; set; } = EntryType.Section;
+    public string SpanInfo { get; set; } = string.Empty; // Формат: "startIndex,length"
 
-    // НОВОЕ: Внутренние элементы для поддержки вложенности синтаксиса (классы в namespace, методы в классах)
-    public List<SyntaxEntry> Children { get; set; } = new List<SyntaxEntry>();
+    // НОВЫЕ СВОЙСТВА: Для быстрого и безопасного извлечения текста без парсинга строк
+    [Newtonsoft.Json.JsonIgnore]
+    public int StartIndex
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(SpanInfo)) return 0;
+            var parts = SpanInfo.Split(',');
+            return parts.Length > 0 && int.TryParse(parts[0], out int res) ? res : 0;
+        }
+    }
+
+    [Newtonsoft.Json.JsonIgnore]
+    public int Length
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(SpanInfo)) return 0;
+            var parts = SpanInfo.Split(',');
+            return parts.Length > 1 && int.TryParse(parts[1], out int res) ? res : 0;
+        }
+    }
 }
 
 // Общий интерфейс для всех языковых парсеров
@@ -43,28 +69,46 @@ public interface ISyntaxParser
 // ФАБРИКА ПАРСЕРОВ: определяет, какой парсер вызвать на основе расширения файла
 public static class SyntaxParserFactory
 {
-    private static readonly Dictionary<string, ISyntaxParser> _parsers = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> CodeExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        { ".cs", new CSharpSyntaxParser() },
-        { ".js", new JavaScriptSyntaxParser() },
-        { ".ts", new JavaScriptSyntaxParser() }, // Используем общий JS/TS парсер
-        { ".html", new HtmlSyntaxParser() },
-        { ".htm", new HtmlSyntaxParser() },
-        { ".php", new PhpSyntaxParser() }, // РЕГИСТРАЦИЯ PHP
-        { ".sql", new SqlSyntaxParser() } // РЕГИСТРАЦИЯ SQL
+        ".cs", ".php", ".js", ".sql", ".html"
     };
 
-    public static bool IsSupported(string extension)
+    private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        return _parsers.ContainsKey(extension);
+        ".gdoc", ".docx", ".txt"
+    };
+
+    public static bool IsSupported(string ext)
+    {
+        if (string.IsNullOrEmpty(ext)) return false;
+        return CodeExtensions.Contains(ext) || TextExtensions.Contains(ext);
     }
 
-    public static ISyntaxParser? GetParser(string extension)
+    public static ISyntaxParser? GetParser(string ext)
     {
-        return _parsers.TryGetValue(extension, out var parser) ? parser : null;
-    }
+        if (string.IsNullOrEmpty(ext)) return null;
 
+        if (ext.Equals(".gdoc", StringComparison.OrdinalIgnoreCase))
+        {
+            return new GoogleDocSyntaxParser();
+        }
+
+        if (ext.Equals(".docx", StringComparison.OrdinalIgnoreCase) ||
+            ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
+        {
+            return new TextDocumentParser();
+        }
+
+        // Ваша существующая логика выбора парсеров для кода исходников:
+        return ext.ToLower() switch
+        {
+            ".cs" => new CSharpSyntaxParser(), // Пример вызова существующего парсера
+            _ => null
+        };
+    }
 }
+
 
 // 1. РЕАЛИЗАЦИЯ ДЛЯ C# (Roslyn API)
 public class CSharpSyntaxParser : ISyntaxParser
@@ -560,6 +604,339 @@ public class SqlSyntaxParser : ISyntaxParser
 
             return endPos - startIndex;
         }
+    }
+}
+public class TextDocumentParser : ISyntaxParser
+{
+    private const int TargetPageSize = 1800;
+
+    public async Task<List<SyntaxEntry>> ParseFileAsync(string absolutePath, string relativePath)
+    {
+        var result = new List<SyntaxEntry>();
+
+        if (!File.Exists(absolutePath)) return result;
+
+        // Асинхронно читаем весь текст файла на диске
+        string text = await File.ReadAllTextAsync(absolutePath);
+        if (string.IsNullOrEmpty(text)) return result;
+
+        // ШАГ 1: Поиск системных разрывов страниц (\f)
+        var pageBreakMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\f");
+        if (pageBreakMatches.Count > 0)
+        {
+            int lastIndex = 0;
+            for (int i = 0; i <= pageBreakMatches.Count; i++)
+            {
+                int nextIndex = i < pageBreakMatches.Count ? pageBreakMatches[i].Index : text.Length;
+                int length = nextIndex - lastIndex;
+                string partPrefix = System.Windows.Application.Current.Resources["Str_TextPart"] as string ?? "ЧАСТЬ";
+                if (length > 0)
+                {
+                    result.Add(new SyntaxEntry
+                    {
+                        FilePath = relativePath,
+                        EntryPath = $"PageBreak/Part_{i + 1}",
+                        DisplayName = $"[{partPrefix} {i + 1}]",
+                        Type = EntryType.Section,
+                        SpanInfo = $"{lastIndex},{length}"
+                    });
+                }
+                lastIndex = nextIndex + 1;
+            }
+            return result;
+        }
+
+        // ШАГ 2: ФОЛБЭК А4 — Умная нарезка с контролем переноса слов и знаков препинания
+        int currentIndex = 0;
+        int pageNumber = 1;
+
+        while (currentIndex < text.Length)
+        {
+            int remainingLength = text.Length - currentIndex;
+            if (remainingLength <= TargetPageSize)
+            {
+                result.Add(CreatePageEntry(relativePath, pageNumber, currentIndex, remainingLength));
+                break;
+            }
+
+            int potentialBreak = currentIndex + TargetPageSize;
+            int actualBreak = potentialBreak;
+
+            // Ищем пробел перед концом страницы, чтобы не резать слово в центре
+            while (actualBreak > currentIndex + (TargetPageSize / 2))
+            {
+                char c = text[actualBreak];
+                if (char.IsWhiteSpace(c) && actualBreak > 0 && !char.IsPunctuation(text[actualBreak - 1]))
+                {
+                    break;
+                }
+                actualBreak--;
+            }
+
+            // Если не нашли хорошей границы — сдвигаемся вперед до ближайшего пробела
+            if (actualBreak <= currentIndex + (TargetPageSize / 2))
+            {
+                actualBreak = potentialBreak;
+                while (actualBreak < text.Length && !char.IsWhiteSpace(text[actualBreak]))
+                {
+                    actualBreak++;
+                }
+            }
+
+            int pageLength = actualBreak - currentIndex;
+            result.Add(CreatePageEntry(relativePath, pageNumber, currentIndex, pageLength));
+
+            currentIndex = actualBreak;
+            while (currentIndex < text.Length && char.IsWhiteSpace(text[currentIndex]))
+            {
+                currentIndex++;
+            }
+            pageNumber++;
+        }
+
+        return result;
+    }
+
+    private SyntaxEntry CreatePageEntry(string path, int pageNum, int start, int len)
+    {
+        string pagePrefix = System.Windows.Application.Current.Resources["Str_TextPage"] as string ?? "Страница";
+
+        return new SyntaxEntry
+        {
+            FilePath = path,
+            EntryPath = $"A4/Page_{pageNum}",
+            DisplayName = $"{pagePrefix} {pageNum}",
+            Type = EntryType.Section,
+            SpanInfo = $"{start},{len}"
+        };
+    }
+}
+public class GoogleDocSyntaxParser : ISyntaxParser
+{
+    private const int TargetPageSize = 1800;
+
+    public async Task<List<SyntaxEntry>> ParseFileAsync(string absolutePath, string relativePath)
+    {
+        var result = new List<SyntaxEntry>();
+
+        if (!File.Exists(absolutePath)) return result;
+
+        // Асинхронно считываем сырой кэшированный JSON документа
+        string jsonContent = await File.ReadAllTextAsync(absolutePath);
+        if (string.IsNullOrEmpty(jsonContent)) return result;
+
+        try
+        {
+            var docJson = Newtonsoft.Json.Linq.JObject.Parse(jsonContent);
+
+            // Сначала извлекаем плоский текст для потенциального фолбэка (разрывы / А4)
+            string fullText = ExtractRawText(docJson);
+
+            // Пробуем парсить иерархическую структуру: Вкладки -> Заголовки
+            bool structureFound = false;
+
+            // Проверяем наличие современных вкладок Google Docs (Tabs)
+            if (docJson["tabs"] is Newtonsoft.Json.Linq.JArray tabsArray && tabsArray.Count > 0)
+            {
+                foreach (var tab in tabsArray)
+                {
+                    string tabTitle = tab["tabStyle"]?["title"]?.ToString() ?? "Вкладка";
+                    var tabBody = tab["childTabs"] ?? tab["documentStyle"] ?? tab; // Поддержка вложенности
+
+                    var tabEntries = ParseContentNode(tabBody, relativePath, tabTitle);
+                    if (tabEntries.Count > 0)
+                    {
+                        result.AddRange(tabEntries);
+                        structureFound = true;
+                    }
+                }
+            }
+            else // Если вкладок нет, парсим стандартный Body документа
+            {
+                var bodyEntries = ParseContentNode(docJson, relativePath, string.Empty);
+                if (bodyEntries.Count > 0)
+                {
+                    result.AddRange(bodyEntries);
+                    structureFound = true;
+                }
+            }
+
+            // КАСКАДНЫЙ ФОЛБЭК: Если заголовков и структуры не обнаружено
+            if (!structureFound && !string.IsNullOrEmpty(fullText))
+            {
+                result.AddRange(ParseFallbackText(fullText, relativePath));
+            }
+        }
+        catch
+        {
+            // В случае сбоя парсинга JSON возвращаем пустой список
+        }
+
+        return result;
+    }
+
+    // Сканирование контента на наличие заголовков HEADING_1 - HEADING_4
+    private List<SyntaxEntry> ParseContentNode(Newtonsoft.Json.Linq.JToken root, string relativePath, string tabPrefix)
+    {
+        var entries = new List<SyntaxEntry>();
+        var contentArray = root["body"]?["content"] as Newtonsoft.Json.Linq.JArray;
+        if (contentArray == null) return entries;
+
+        int currentAbsoluteIndex = 0;
+
+        foreach (var element in contentArray)
+        {
+            var paragraph = element["paragraph"];
+            if (paragraph != null)
+            {
+                string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
+
+                // Вычисляем длину параграфа, чтобы знать его границы
+                int elementLength = 0;
+                var elements = paragraph["elements"] as Newtonsoft.Json.Linq.JArray;
+                if (elements != null)
+                {
+                    foreach (var el in elements)
+                    {
+                        string textRun = el["textRun"]?["content"]?.ToString() ?? string.Empty;
+                        elementLength += textRun.Length;
+                    }
+                }
+
+                // Ловим заголовки от 1 до 4 уровня
+                if (namedStyle.StartsWith("HEADING_"))
+                {
+                    string headingLevelStr = namedStyle.Replace("HEADING_", "");
+                    if (int.TryParse(headingLevelStr, out int level) && level >= 1 && level <= 4)
+                    {
+                        // Извлекаем чистый текст заголовка рассказа
+                        string headingText = "";
+                        if (elements != null)
+                        {
+                            foreach (var el in elements)
+                            {
+                                headingText += el["textRun"]?["content"]?.ToString() ?? string.Empty;
+                            }
+                        }
+                        headingText = headingText.Trim();
+
+                        if (!string.IsNullOrEmpty(headingText))
+                        {
+                            string entryPath = string.IsNullOrEmpty(tabPrefix) ? headingText : $"{tabPrefix}/{headingText}";
+
+                            entries.Add(new SyntaxEntry
+                            {
+                                FilePath = relativePath,
+                                EntryPath = entryPath,
+                                DisplayName = headingText,
+                                Type = EntryType.Heading,
+                                // Длина главы временно считается до следующего заголовка, 
+                                // для ИИ нарезки запишем пока текущую координату и длину самого заголовка
+                                SpanInfo = $"{currentAbsoluteIndex},{elementLength}"
+                            });
+                        }
+                    }
+                }
+                currentAbsoluteIndex += elementLength;
+            }
+            else
+            {
+                // Учитываем сдвиг индексов для недеструктивных элементов (таблицы, разделы)
+                string rawText = element.ToString();
+                currentAbsoluteIndex += rawText.Length / 10; // приблизительный фолбэк сдвига координат
+            }
+        }
+
+        return entries;
+    }
+
+    // Извлечение всего плоского текста из JSON структуры для работы А4-фолбэка
+    private string ExtractRawText(Newtonsoft.Json.Linq.JObject docJson)
+    {
+        var sb = new System.Text.StringBuilder();
+        var contentArray = docJson["body"]?["content"] as Newtonsoft.Json.Linq.JArray;
+        if (contentArray != null)
+        {
+            foreach (var element in contentArray)
+            {
+                var elements = element["paragraph"]?["elements"] as Newtonsoft.Json.Linq.JArray;
+                if (elements != null)
+                {
+                    foreach (var el in elements)
+                    {
+                        sb.Append(el["textRun"]?["content"]?.ToString() ?? string.Empty);
+                    }
+                }
+            }
+        }
+        return sb.ToString();
+    }
+
+    // Реализация каскадного фолбэка (Разрывы -> А4)
+    private List<SyntaxEntry> ParseFallbackText(string text, string relativePath)
+    {
+        var result = new List<SyntaxEntry>();
+        var pageBreakMatches = System.Text.RegularExpressions.Regex.Matches(text, @"\f");
+
+        if (pageBreakMatches.Count > 0)
+        {
+            int lastIndex = 0;
+            for (int i = 0; i <= pageBreakMatches.Count; i++)
+            {
+                int nextIndex = i < pageBreakMatches.Count ? pageBreakMatches[i].Index : text.Length;
+                int length = nextIndex - lastIndex;
+                if (length > 0)
+                {
+                    result.Add(new SyntaxEntry
+                    {
+                        FilePath = relativePath,
+                        EntryPath = $"PageBreak/Part_{i + 1}",
+                        DisplayName = $"[ЧАСТЬ {i + 1}]",
+                        Type = EntryType.Section,
+                        SpanInfo = $"{lastIndex},{length}"
+                    });
+                }
+                lastIndex = nextIndex + 1;
+            }
+            return result;
+        }
+
+        // Нарезка А4 с контролем слов
+        int currentIndex = 0;
+        int pageNumber = 1;
+
+        while (currentIndex < text.Length)
+        {
+            int remainingLength = text.Length - currentIndex;
+            if (remainingLength <= TargetPageSize)
+            {
+                result.Add(new SyntaxEntry { FilePath = relativePath, EntryPath = $"A4/Page_{pageNumber}", DisplayName = $"Страница {pageNumber}", Type = EntryType.Section, SpanInfo = $"{currentIndex},{remainingLength}" });
+                break;
+            }
+
+            int potentialBreak = currentIndex + TargetPageSize;
+            int actualBreak = potentialBreak;
+
+            while (actualBreak > currentIndex + (TargetPageSize / 2))
+            {
+                char c = text[actualBreak];
+                if (char.IsWhiteSpace(c) && actualBreak > 0 && !char.IsPunctuation(text[actualBreak - 1])) break;
+                actualBreak--;
+            }
+
+            if (actualBreak <= currentIndex + (TargetPageSize / 2))
+            {
+                actualBreak = potentialBreak;
+                while (actualBreak < text.Length && !char.IsWhiteSpace(text[actualBreak])) actualBreak++;
+            }
+
+            result.Add(new SyntaxEntry { FilePath = relativePath, EntryPath = $"A4/Page_{pageNumber}", DisplayName = $"Страница {pageNumber}", Type = EntryType.Section, SpanInfo = $"{currentIndex},{actualBreak - currentIndex}" });
+            currentIndex = actualBreak;
+            while (currentIndex < text.Length && char.IsWhiteSpace(text[currentIndex])) currentIndex++;
+            pageNumber++;
+        }
+
+        return result;
     }
 }
 

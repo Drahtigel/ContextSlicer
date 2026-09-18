@@ -312,45 +312,44 @@ CancellationToken token)
             }
         }
 
-        // Формируем полный путь к итоговому файлу
-        string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".pdf") ? fileName : fileName + ".pdf");
+         // Формируем полный путь к итоговому файлу
+    string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".pdf") ? fileName : fileName + ".pdf");
 
-        // ИСПРАВЛЕНО: Защита от блокировки процесса при перезаписи существующего PDF
-        if (File.Exists(fullOutputPath))
+    // ИСПРАВЛЕНО: Защита от блокировки процесса при перезаписи существующего PDF
+    if (File.Exists(fullOutputPath))
+    {
+        try
         {
-            try
-            {
-                // Пытаемся физически удалить старую версию файла перед тем, как рендерер начнет монопольно писать данные
-                File.Delete(fullOutputPath);
-            }
-            catch (IOException)
-            {
-                // Если файл открыт в стороннем просмотрщике (например, в Acrobat Reader или браузере)
-                System.Windows.MessageBox.Show(
-                    $"Не удалось перезаписать файл.\nВозможно, он открыт в другой программе (PDF-просмотрщике или браузере).\n\nЗакройте файл и повторите попытку.",
-                    "Ошибка доступа к файлу",
-                    System.Windows.MessageBoxButton.OK,
-                    System.Windows.MessageBoxImage.Warning);
-                return; // Мягко выходим из метода, предотвращая жесткий крах всего приложения
-            }
-            catch (Exception ex)
-            {
-                System.Windows.MessageBox.Show($"Не удалось подготовить файл к перезаписи: {ex.Message}", "Ошибка",
-                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-                return;
-            }
+            // Пытаемся физически удалить старую версию файла перед тем, как рендерер начнет монопольно писать данные
+            File.Delete(fullOutputPath);
         }
-
-        // Запускаем асинхронный рендеринг документа в PDF
-        await Task.Run(() =>
+        catch (IOException)
         {
-            var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
-            renderer.Document = document;
-            renderer.RenderDocument();
-            renderer.PdfDocument.Save(fullOutputPath); // ТЕПЕРЬ ЗАПИСЬ ВСЕГДА ИДЕТ В ЧИСТЫЙ ПУТЬ БЕЗ КОНФЛИКТОВ!
-        }, token);
+            // Если файл открыт в стороннем просмотрщике (например, в Acrobat Reader или браузере)
+            System.Windows.MessageBox.Show(
+                $"Не удалось перезаписать файл.\nВозможно, он открыт в другой программе (PDF-просмотрщике или браузере).\n\nЗакройте файл и повторите попытку.",
+                "Ошибка доступа к файлу", 
+                System.Windows.MessageBoxButton.OK, 
+                System.Windows.MessageBoxImage.Warning);
+            return; // Мягко выходим из метода, предотвращая жесткий крах всего приложения
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Не удалось подготовить файл к перезаписи: {ex.Message}", "Ошибка", 
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            return;
+        }
     }
 
+    // Запускаем асинхронный рендеринг документа в PDF
+    await Task.Run(() =>
+    {
+        var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
+        renderer.Document = document;
+        renderer.RenderDocument();
+        renderer.PdfDocument.Save(fullOutputPath); // ТЕПЕРЬ ЗАПИСЬ ВСЕГДА ИДЕТ В ЧИСТЫЙ ПУТЬ БЕЗ КОНФЛИКТОВ!
+    }, token);
+}
 
     // Асинхронная генерация обычного TXT с поддержкой синтаксических записей
     public static async Task GenerateContextFileAsync(

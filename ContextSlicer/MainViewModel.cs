@@ -1,6 +1,7 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.WindowsAPICodePack.Dialogs;
+using MigraDoc;
 using Newtonsoft.Json;
 using PdfSharp.Fonts;
 using System;
@@ -8,10 +9,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Media;
-using MigraDoc;
 
 namespace ContextSlicer;
 
@@ -445,22 +446,57 @@ public partial class MainViewModel : ObservableObject
 
     private void RefreshTreeView(List<string> checkedFiles)
     {
-        if (Directory.Exists(RootPath))
-        {
-            RootNode = ContextBuilderService.BuildTree(RootPath, checkedFiles);
-
-            // НОВОЕ: Накатываем честный пересчет квадратиков для всех папок проекта
-            if (RootNode != null)
-            {
-                DeepVerifyCheckStates(RootNode);
-            }
-        }
-        else
+        if (SelectedProject == null || string.IsNullOrWhiteSpace(RootPath))
         {
             RootNode = null;
+            _ = RecalculateContextSizeAsync();
+            return;
+        }
+
+        switch (SelectedProject.Type)
+        {
+            case ProjectType.GoogleDoc:
+                // Для Google Docs корнем будет виртуальный файл кэша
+                string docId = GoogleDownloader.ExtractDocumentId(RootPath);
+                string cachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", $"{docId}.json");
+                RootNode = new FileSystemNode
+                {
+                    Name = $"{SelectedProject.ProjectName}.gdoc",
+                    FullPath = cachePath,
+                    RelativePath = $"{SelectedProject.ProjectName}.gdoc",
+                    IsFile = true
+                };
+                RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode });
+                break;
+
+            case ProjectType.WordDoc:
+                // Для Word файлов корнем является сам файл .docx на диске
+                RootNode = new FileSystemNode
+                {
+                    Name = Path.GetFileName(RootPath),
+                    FullPath = RootPath,
+                    RelativePath = Path.GetFileName(RootPath),
+                    IsFile = true
+                };
+                RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode });
+                break;
+
+            default:
+                // Стандартный локальный проект-папка
+                if (Directory.Exists(RootPath))
+                {
+                    RootNode = ContextBuilderService.BuildTree(RootPath, checkedFiles);
+                    if (RootNode != null) DeepVerifyCheckStates(RootNode);
+                }
+                else
+                {
+                    RootNode = null;
+                }
+                break;
         }
         _ = RecalculateContextSizeAsync();
     }
+
 
 
     [RelayCommand]
@@ -1353,6 +1389,184 @@ public partial class MainViewModel : ObservableObject
 
         // Обновляем квадратики для родительских папок на диске снизу вверх
         DeepVerifyCheckStates(root);
+    }
+
+    // Флаги управления видимостью и состоянием оверлея проектов
+    [ObservableProperty] private bool _isProjectOverlayVisible;
+    [ObservableProperty] private bool _isLocalProjectSelected = true; // RadioButton: Локальная папка
+    [ObservableProperty] private bool _isCloudProjectSelected;        // RadioButton: Google Doc
+
+    // Буферные поля для ввода данных внутри оверлея
+    [ObservableProperty] private string _editProjectNameInput = string.Empty;
+    [ObservableProperty] private string _editProjectRootPathInput = string.Empty; // Папка или URL ссылки
+    [ObservableProperty] private string _editProjectOutputPathInput = string.Empty;
+
+
+    // Дополнительные свойства для трех типов проектов во ViewModel
+    [ObservableProperty] private bool _isLocalFolderSelected = true;
+    [ObservableProperty] private bool _isGoogleDocSelected;
+    [ObservableProperty] private bool _isWordDocSelected;
+
+    // Команда кнопки "Обзор" для источника данных (Папка или Word)
+    [RelayCommand]
+    private void BrowseProjectSource()
+    {
+        if (IsLocalFolderSelected)
+        {
+            // Используем ваш стандартный диалог выбора папки (например, CommonOpenFileDialog)
+            var dialog = new Microsoft.WindowsAPICodePack.Dialogs.CommonOpenFileDialog { IsFolderPicker = true };
+            if (dialog.ShowDialog() == Microsoft.WindowsAPICodePack.Dialogs.CommonFileDialogResult.Ok)
+            {
+                EditProjectRootPathInput = dialog.FileName;
+            }
+        }
+        else if (IsWordDocSelected)
+        {
+            // Открываем диалог выбора файлов .doc / .docx
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "Документы MS Word (*.doc;*.docx)|*.doc;*.docx|Все файлы (*.*)|*.*"
+            };
+            if (dialog.ShowDialog() == true)
+            {
+                EditProjectRootPathInput = dialog.FileName;
+            }
+        }
+    }
+
+    // Команда кнопки "Вставить" (Иконка 📋 внутри текстового поля Google Doc)
+    [RelayCommand]
+    private void PasteUrlFromClipboard()
+    {
+        if (Clipboard.ContainsText())
+        {
+            EditProjectRootPathInput = Clipboard.GetText()?.Trim() ?? string.Empty;
+        }
+    }
+
+    // КНОПКА ОТМЕНА: Полная зачистка буферных полей и возврат в интерфейс
+    [RelayCommand]
+    private void CancelProjectOverlay()
+    {
+        EditProjectNameInput = string.Empty;
+        EditProjectRootPathInput = string.Empty;
+        EditProjectOutputPathInput = string.Empty;
+        IsProjectOverlayVisible = false;
+    }
+
+    // Дополнительный флаг для блокировки интерфейса оверлея во время скачивания кэша
+    [ObservableProperty] private bool _isProjectLoading;
+
+    // КНОПКА ОК: Комплексная валидация с учетом перечисления ProjectType
+    [RelayCommand]
+    private async Task ConfirmSaveProjectConfig()
+    {
+        string projName = EditProjectNameInput?.Trim() ?? string.Empty;
+        string rootPath = EditProjectRootPathInput?.Trim() ?? string.Empty;
+        string outPath = EditProjectOutputPathInput?.Trim() ?? string.Empty;
+
+        // 1. Валидация на пустые строки
+        if (string.IsNullOrWhiteSpace(projName) || string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(outPath))
+        {
+            MessageBox.Show("Все поля обязательны для заполнения!", "Ошибка валидации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 2. Проверка спецсимволы в имени проекта
+        char[] invalidChars = Path.GetInvalidFileNameChars();
+        if (projName.Any(c => invalidChars.Contains(c)))
+        {
+            MessageBox.Show("Название проекта содержит недопустимые символы для имени файла!", "Ошибка валидации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 3. Проверка на уникальность имени среди ДРУГИХ проектов
+        bool isDuplicate = Projects.Any(p => p.ProjectName.Equals(projName, StringComparison.OrdinalIgnoreCase) && p != SelectedProject);
+        if (isDuplicate)
+        {
+            MessageBox.Show($"Проект с названием \"{projName}\" уже существует!", "Ошибка валидации", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 4. Проверка и создание выходной папки результатов
+        if (!Directory.Exists(outPath))
+        {
+            try { Directory.CreateDirectory(outPath); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Не удалось создать выходную папку: {ex.Message}", "Ошибка диска", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+        }
+
+        // Определяем выбранный тип на основе RadioButtons оверлея
+        ProjectType selectedType = ProjectType.Folder;
+        if (IsGoogleDocSelected) selectedType = ProjectType.GoogleDoc;
+        else if (IsWordDocSelected) selectedType = ProjectType.WordDoc;
+
+        // 5. Проверка доступности источников перед фиксацией
+        if (selectedType == ProjectType.Folder && !Directory.Exists(rootPath))
+        {
+            MessageBox.Show("Указанная локальная папка источника данных не существует!", "Ошибка пути", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (selectedType == ProjectType.WordDoc && !File.Exists(rootPath))
+        {
+            MessageBox.Show("Указанный файл MS Word не найден на диске!", "Ошибка пути", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if (selectedType == ProjectType.GoogleDoc)
+        {
+            if (string.IsNullOrEmpty(GoogleDownloader.ExtractDocumentId(rootPath)))
+            {
+                MessageBox.Show("Строка не содержит валидный ID Google Документа!", "Ошибка ссылки", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // ВКЛЮЧАЕМ РЕЖИМ ЗАГРУЗКИ: Блокируем оверлей, показываем прогресс
+            IsProjectLoading = true;
+            try
+            {
+                // Запускаем наш класс-загрузчик. Путь к папке приложения берем из текущей среды выполнения
+                var downloader = new GoogleDownloader();
+                string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+                bool success = await downloader.DownloadToCacheAsync(rootPath, projectBaseDir);
+                if (!success)
+                {
+                    MessageBox.Show("Google Документ недоступен! Проверьте доступ по ссылке и сетевое подключение.", "Ошибка сети", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
+            finally
+            {
+                // Всегда выключаем режим загрузки при любом исходе
+                IsProjectLoading = false;
+            }
+        }
+
+        // 6. СОХРАНЕНИЕ: Переносим проверенные данные в модель
+        ProjectConfig? targetProject = SelectedProject;
+        // ИСПРАВЛЕНО: Заменили SelectedProject.ProjectName на targetProject.ProjectName
+        if (targetProject == null || EditProjectNameInput != targetProject.ProjectName)
+        {
+            targetProject = new ProjectConfig();
+            Projects.Add(targetProject);
+        }
+
+
+        targetProject.ProjectName = projName;
+        targetProject.RootPath = rootPath;
+        targetProject.OutputPath = outPath;
+        targetProject.Type = selectedType; // Фиксируем новый ProjectType в конфигурации!
+
+        // Прячем оверлей и фокусим ListBox на свежем проекте
+        IsProjectOverlayVisible = false;
+        SelectedProject = targetProject;
+
+        SilentSave();
     }
 
 
