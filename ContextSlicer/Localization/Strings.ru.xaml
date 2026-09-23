@@ -73,4 +73,52 @@
     <!-- Сокращенные префиксы художественного текста -->
     <system:String x:Key="Str_Type_Tab">[ВКЛ]</system:String>
     <system:String x:Key="Str_Type_Heading">[ГЛ]</system:String>
+
+    <system:String x:Key="Str_SourceDataLabel">Источник данных:</system:String>
+    <!-- Ошибки сетевого взаимодействия с облаком -->
+    <system:String x:Key="Str_Err_GoogleDocUnavailable">Google Документ недоступен! Проверьте доступ по ссылке, валидность API-ключа и сетевое подключение.</system:String>
+    <system:String x:Key="Str_Err_NetworkTitle">Ошибка сети</system:String>
+    <!-- Локализация менеджера сервисных аккаунтов Google -->
+    <system:String x:Key="Str_Err_InvalidServiceAccount">Выбранный файл не является валидным ключом Google Service Account!</system:String>
+    <system:String x:Key="Str_Err_ValidationTitle">Ошибка валидации</system:String>
+    <system:String x:Key="Str_Err_ImportFailed">Не удалось прочитать или импортировать ключ:</system:String>
+    <system:String x:Key="Str_Err_ImportTitle">Ошибка импорта</system:String>
+    <system:String x:Key="Str_Msg_EmailCopied">Email сервисного аккаунта успешно скопирован в буфер обмена:&#x0a;&#x0a;{0}&#x0a;&#x0a;Вставьте его в настройки доступа вашего Google Документа!</system:String>
+    <system:String x:Key="Str_Msg_EmailCopiedTitle">Успех</system:String>
+    <system:String x:Key="Str_Err_ExtractEmailFailed">Не удалось извлечь Email:</system:String>
+    <system:String x:Key="Str_Err_GeneralErrorTitle">Ошибка</system:String>
+    <!-- Параметры системного диалога выбора ключа -->
+    <system:String x:Key="Str_Dialog_JsonFilter">Ключ Google API (*.json)|*.json|Все файлы (*.*)|*.*</system:String>
+    <system:String x:Key="Str_Dialog_JsonTitle">Выберите скачанный JSON-ключ сервисного аккаунта</system:String>
+    <system:String x:Key="Str_TextLabel">Текст</system:String>
+    <!-- Статусы оверлея обновления проекта -->
+    <system:String x:Key="Str_Update_ReadDir">Анализ структуры каталогов...</system:String>
+    <system:String x:Key="Str_Update_GoogleApi">Синхронизация с Google Drive...</system:String>
+    <system:String x:Key="Str_Update_ConvertDocx">Конвертация документов...</system:String>
+
+    <!-- Сообщения об ошибках -->
+    <system:String x:Key="Str_Err_Update_ReadDir">Ошибка доступа к файлам. Убедитесь, что носитель или локальный диск подключены.</system:String>
+    <system:String x:Key="Str_Err_Update_Network">Сбой сети. Проверьте интернет-соединение.</system:String>
+    <system:String x:Key="Str_Err_Update_Convert">Не удалось сконвертировать файл. Возможно, архив поврежден.</system:String>
+    <system:String x:Key="Str_Update_BtnRetry">Повторить</system:String>
+    <system:String x:Key="Str_Update_BtnCancel">Отмена</system:String>
+    <system:String x:Key="Str_Update_Title">Обновление проекта</system:String>
+    
+
+    <!-- НОВЫЕ СТРОКИ ДЛЯ ИСКЛЮЧЕНИЯ ХАРДКОДА -->
+    <system:String x:Key="Str_Update_LoadingGoogleDoc">Загрузка структуры Google Документа...</system:String>
+    <system:String x:Key="Str_Update_BuildingTree">Построение синтаксического дерева...</system:String>
+    <system:String x:Key="Str_Err_GoogleAuthFailed">Ошибка авторизации Google: Проверьте файл ключа сервисного аккаунта.</system:String>
+    <system:String x:Key="Str_Err_GoogleParseError">Ошибка разбора структуры Google Документа. Некорректный JSON.</system:String>
+    <system:String x:Key="Str_Status_ProjectSaved">Настройки проекта успешно сохранены.</system:String>
+    <!-- Элементы контекстного меню проектов -->
+    <system:String x:Key="Str_Mnu_UpdateProject">Обновить структуру</system:String>
+    <system:String x:Key="Str_Mnu_DeleteProject">Удалить проект</system:String>
+    <system:String x:Key="Str_Mnu_RecreateGoogleDoc">Очистить и пересоздать проект</system:String>
+
+    <!-- Сообщения подтверждения -->
+    <system:String x:Key="Str_Msg_ConfirmDeleteProj">Вы уверены, что хотите полностью удалить проект "{0}" и все его модули?</system:String>
+    <system:String x:Key="Str_Msg_ConfirmRecreateGoogle">Внимание! Это действие полностью удалит локальный кеш, очистит дерево и принудительно скачает документ заново. Продолжить?</system:String>
+    <system:String x:Key="Str_Title_Confirmation">Подтверждение действия</system:String>
+
 </ResourceDictionary>

@@ -70,5 +70,29 @@ namespace ContextSlicer.Properties {
                 this["IncludeDirectoryStructure"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string EncryptedGoogleApiKey {
+            get {
+                return ((string)(this["EncryptedGoogleApiKey"]));
+            }
+            set {
+                this["EncryptedGoogleApiKey"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string DefaultServiceAccountEmail {
+            get {
+                return ((string)(this["DefaultServiceAccountEmail"]));
+            }
+            set {
+                this["DefaultServiceAccountEmail"] = value;
+            }
+        }
     }
 }

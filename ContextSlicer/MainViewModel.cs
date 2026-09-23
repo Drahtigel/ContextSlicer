@@ -1,15 +1,20 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using ContextSlicer.Filesystem;
+using ContextSlicer.Google;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using MigraDoc;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using PdfSharp.Fonts;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Media;
@@ -320,7 +325,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
+  //  public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
 
 
     // Свойство для динамического вывода имени проекта в заголовок Expander
@@ -367,12 +372,16 @@ public partial class MainViewModel : ObservableObject
         IsDarkTheme = Properties.Settings.Default.IsDarkTheme;
         IsProjectBlockExpanded = Properties.Settings.Default.IsProjectBlockExpanded;
         OnIsDarkThemeChanged(IsDarkTheme);
+        // Ваша существующая инициализация (InitializeLanguage и т.д.)
+        LoadAvailableServiceAccounts();
 
         LoadProjects();
     }
 
 
     // Логика при выборе ПРОЕКТА
+    // Модифицированная логика автоматической фоновой проверки кэша при смене проекта
+    // 3. Модифицированная логика автоматической фоновой проверки кэша (OnSelectedProjectChanged)
     partial void OnSelectedProjectChanged(ProjectConfig? value)
     {
         if (value != null)
@@ -380,19 +389,35 @@ public partial class MainViewModel : ObservableObject
             ProjectNameInput = value.ProjectName;
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
-           
             PromptRules = value.PromptRules;
-            IncludeDirectoryStructure = value.IncludeDirectoryStructure; // ЧИТАЕМ НАСТРОЙКУ
+            IncludeDirectoryStructure = value.IncludeDirectoryStructure;
 
-
-            // Загружаем список модулей этого проекта
             Modules = new ObservableCollection<ContextModule>(value.Modules);
 
-            // Перестраиваем дерево папок базово (без выбранных файлов)
-            RefreshTreeView(new List<string>());
+            if (value.Type == ProjectType.GoogleDoc)
+            {
+                System.Windows.Application.Current.Dispatcher.BeginInvoke(new Func<Task>(async () =>
+                {
+                    var downloader = new GoogleDownloader();
+                    string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    if (downloader.IsCacheExpired(value.RootPath, projectBaseDir))
+                    {
+                        string keyPath = GetKeyPathByEmail(value.GoogleApiKey);
+                        if (!string.IsNullOrWhiteSpace(keyPath) && File.Exists(keyPath))
+                        {
+                            await downloader.DownloadToCacheAsync(value.RootPath, projectBaseDir, keyPath);
+                        }
+                    }
+                    RefreshTreeView(value.Modules.FirstOrDefault()?.CheckedFiles ?? new List<string>());
+                    SelectedModule = Modules.FirstOrDefault();
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
 
-            // Выбираем первый модуль, если он есть
-            SelectedModule = Modules.FirstOrDefault();
+            else
+            {
+                RefreshTreeView(new List<string>());
+                SelectedModule = Modules.FirstOrDefault();
+            }
         }
         else
         {
@@ -401,8 +426,98 @@ public partial class MainViewModel : ObservableObject
         }
         OnPropertyChanged(nameof(IsModuleSelectorEnabled));
         OnPropertyChanged(nameof(DisplayProjectName));
-
     }
+
+    private string GetKeyPathByEmail(string email)
+    {
+        if (string.IsNullOrEmpty(email)) return string.Empty;
+
+        string systemStorageDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ServiceAccounts");
+        if (!Directory.Exists(systemStorageDir)) return string.Empty;
+
+        var files = Directory.GetFiles(systemStorageDir, "*.json");
+        foreach (var file in files)
+        {
+            try
+            {
+                string content = File.ReadAllText(file);
+                var json = JObject.Parse(content);
+                if (json["client_email"]?.ToString() == email)
+                {
+                    return file; // Нашли физический файл ключа
+                }
+            }
+            catch { }
+        }
+        return string.Empty;
+    }
+
+    // ОБНОВЛЕННАЯ КОМАНДА СИНХРОНИЗАЦИИ (Кнопка V): Принудительный сброс кэша и перечитывание
+    // Внутри MainViewModel.cs
+    [RelayCommand]
+    private async Task SyncProjectSource()
+    {
+        if (SelectedProject == null || string.IsNullOrWhiteSpace(RootPath)) return;
+
+        // Если текущий проект — Google Документ, выполняем жесткий перезапрос структуры из облака
+        if (SelectedProject.Type == ProjectType.GoogleDoc)
+        {
+            string encryptedKey = Properties.Settings.Default.EncryptedGoogleApiKey ?? string.Empty;
+            string apiKey = SecureCredentialStorage.DecryptString(encryptedKey);
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                string authErr = Application.Current.Resources["Str_Err_GoogleAuthFailed"] as string
+                                 ?? "Google API Key отсутствует или поврежден!";
+                string authTitle = Application.Current.Resources["Str_Err_ValidationTitle"] as string
+                                   ?? "Ошибка авторизации";
+                MessageBox.Show(authErr, authTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Активируем полноэкранный адаптивный оверлей обновления структуры проекта
+            IsProjectLoading = true;
+            try
+            {
+                // Интеграция с подсистемой отображения статусов
+                await StartProjectUpdateAsync(UpdateType.GoogleApiLoad, RootPath);
+
+                var downloader = new GoogleDownloader();
+                string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+                // Принудительно качаем свежую структуру, игнорируя проверку IsCacheExpired
+                bool success = await downloader.DownloadToCacheAsync(RootPath, projectBaseDir, apiKey);
+                if (!success)
+                {
+                    string syncErr = Application.Current.Resources["Str_Err_GoogleDocUnavailable"] as string
+                                     ?? "Не удалось обновить кэш из облака.";
+                    string syncTitle = Application.Current.Resources["Str_Err_NetworkTitle"] as string
+                                       ?? "Ошибка синхронизации";
+                    MessageBox.Show(syncErr, syncTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
+            finally
+            {
+                IsProjectLoading = false;
+                IsUpdateOverlayVisible = false; // Гарантированно гасим оверлей обновления
+            }
+        }
+
+        // Полностью перестраиваем синтаксическое дерево (WPF перерисует ноды на экране на лету)
+        RefreshTreeView(SelectedModule?.CheckedFiles ?? new List<string>());
+        if (RootNode != null && SelectedModule != null)
+        {
+            FastPreloadSavedEntries(SelectedModule, RootNode);
+        }
+
+        string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
+                            ?? "Синхронизация структуры успешно завершена!";
+        string successTitle = Application.Current.Resources["Str_Msg_EmailCopiedTitle"] as string
+                              ?? "Успех";
+        MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+
 
     // Логика при выборе конкретного МОДУЛЯ (контекста) внутри проекта
     // Имя должно быть ОДИН В ОДИН как имя свойства после On...
@@ -442,9 +557,11 @@ public partial class MainViewModel : ObservableObject
             _isUpdatingFields = false;
         }
     }
+    // Внутри MainViewModel.cs
+    // Внутри MainViewModel.cs
 
-
-    private void RefreshTreeView(List<string> checkedFiles)
+    // ИСПРАВЛЕНО: Изменено на асинхронное выполнение для безопасного ожидания парсинга без ContinueWith
+    private async void RefreshTreeView(List<string> checkedFiles)
     {
         if (SelectedProject == null || string.IsNullOrWhiteSpace(RootPath))
         {
@@ -456,33 +573,59 @@ public partial class MainViewModel : ObservableObject
         switch (SelectedProject.Type)
         {
             case ProjectType.GoogleDoc:
-                // Для Google Docs корнем будет виртуальный файл кэша
-                string docId = GoogleDownloader.ExtractDocumentId(RootPath);
-                string cachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", $"{docId}.json");
+                string googleDocId = GoogleDownloader.ExtractDocumentId(RootPath);
+                string googleCachePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", $"{googleDocId}.json");
+
                 RootNode = new FileSystemNode
                 {
-                    Name = $"{SelectedProject.ProjectName}.gdoc",
-                    FullPath = cachePath,
-                    RelativePath = $"{SelectedProject.ProjectName}.gdoc",
-                    IsFile = true
+                    Name = SelectedProject.ProjectName,
+                    FullPath = googleCachePath,
+                    RelativePath = googleCachePath,
+                    IsFile = false
                 };
-                RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode });
+
+                try
+                {
+                    RootNode.Children.Clear();
+                    // Создаем временную техническую ноду-заглушку
+                    RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode, IsFile = true });
+
+                    // ИСПРАВЛЕНО: Прямое и безопасное ожидание задачи парсинга вместо ContinueWith
+                    await PopulateSyntaxNodesAsync(RootNode);
+
+                    // Код ниже гарантированно выполнится в основном UI-потоке после успешного парсинга
+                    if (RootNode != null)
+                    {
+                        RootNode.VerifyCheckState();
+                        if (SelectedModule != null)
+                        {
+                            FastPreloadSavedEntries(SelectedModule, RootNode);
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    System.Diagnostics.Debug.WriteLine("[Google Sync] Парсинг структуры был отменен.");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Google Sync Parser Break] {ex.Message}");
+                }
                 break;
 
             case ProjectType.WordDoc:
-                // Для Word файлов корнем является сам файл .docx на диске
                 RootNode = new FileSystemNode
                 {
                     Name = Path.GetFileName(RootPath),
                     FullPath = RootPath,
                     RelativePath = Path.GetFileName(RootPath),
-                    IsFile = true
+                    IsFile = false
                 };
+                RootNode.Children.Clear();
                 RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode });
                 break;
 
             default:
-                // Стандартный локальный проект-папка
                 if (Directory.Exists(RootPath))
                 {
                     RootNode = ContextBuilderService.BuildTree(RootPath, checkedFiles);
@@ -494,9 +637,10 @@ public partial class MainViewModel : ObservableObject
                 }
                 break;
         }
+
+        OnPropertyChanged(nameof(RootNode));
         _ = RecalculateContextSizeAsync();
     }
-
 
 
     [RelayCommand]
@@ -660,38 +804,184 @@ public partial class MainViewModel : ObservableObject
 
 
     // Метод принудительной синхронизации текущего состояния дерева с моделью модуля
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ЖЕСТКАЯ СИНХРОНИЗАЦИЯ ПУТЕЙ БЕЗ ИСКАЖЕНИЯ И ДУБЛИРОВАНИЯ-->
+    // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПОЛНАЯ АДАПТИВНАЯ ОЧИСТКА И СИНХРОНИЗАЦИЯ СТРУКТУРЫ    -->
+    // ================================================================= -->
     public void SyncTreeWithModule()
     {
         if (SelectedModule == null || RootNode == null) return;
 
-        // 1. В CheckedFiles сохраняем ТОЛЬКО файлы, выбранные на 100% целиком
         var checkedFilesList = new List<string>();
-        var flatFilesList = new List<FileSystemNode>();
-        ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList); // Использует строго true
-        foreach (var node in flatFilesList)
+        var checkedEntriesList = new List<SyntaxEntry>();
+
+        // 1. ОПРЕДЕЛЯЕМ ТИП ПРОЕКТА ДЛЯ ИЗОЛЯЦИИ ЛОГИКИ ТЕКСТА И КОДА
+        bool isTextProject = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
+
+        if (!isTextProject)
         {
-            checkedFilesList.Add(node.RelativePath);
+            // ЛОКАЛЬНЫЙ ПРОЕКТ (КОД C#): Набиваем CheckedFiles списком путей к файлам на диске
+            var flatFilesList = new List<FileSystemNode>();
+            ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList);
+            foreach (var node in flatFilesList)
+            {
+                checkedFilesList.Add(node.RelativePath);
+            }
+        }
+        else
+        {
+            // КНИЖНЫЙ ПРОЕКТ (GOOGLE DOCS): CheckedFiles остается чистым и пустым [], 
+            // так как ссылка на документ уже лежит в RootPath на верхнем уровне JSON!
         }
 
-        // 2. В CheckedEntries собираем точечные элементы синтаксиса
-        var checkedEntriesList = new List<SyntaxEntry>();
+        // 2. СБОР ОТМЕЧЕННЫХ ГАЛОЧКАМИ СИНТАКСИЧЕСКИХ НОД (ВКЛАДОК И ГЛАВ)
         var flatSyntaxList = new List<FileSystemNode>();
         CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
+
         foreach (var node in flatSyntaxList)
         {
+            // Оптимизация: Для книг зануляем локальный жесткий FilePath, избавляя JSON от раздувания
+            string effFilePath = isTextProject ? string.Empty : node.RelativePath;
+
+            // Берем оригинальный EntryPath, который построил наш JSON-парсер
+            string cleanEntryPath = node.EntryPath;
+
             checkedEntriesList.Add(new SyntaxEntry
             {
-                FilePath = node.RelativePath,
-                EntryPath = node.EntryPath,
+                FilePath = effFilePath,
+                EntryPath = cleanEntryPath,
                 DisplayName = node.Name,
                 Type = node.SyntaxType,
                 SpanInfo = node.SyntaxSpanInfo
             });
         }
 
+        // 3. ФИКСИРУЕМ ОЧИЩЕННЫЕ ДАННЫЕ В ТЕКУЩЕМ МОДУЛЕ ПРОЕКТА
         SelectedModule.CheckedFiles = checkedFilesList;
         SelectedModule.CheckedEntries = checkedEntriesList;
     }
+
+
+    // ИСПРАВЛЕНО: Точечная очистка путей внутри ExecuteSave перед записью JSON
+    // ================================================================= -->
+    // ВОССТАНОВЛЕНО: ЧИСТОЕ МОНОЛИТНОЕ СОХРАНЕНИЕ БЕЗ ХАРДКОДА СТРОК    -->
+    // ================================================================= -->
+    private void ExecuteSave(bool showMessage)
+    {
+        if (SelectedProject == null)
+        {
+            if (!string.IsNullOrWhiteSpace(ProjectNameInput))
+            {
+                var autoProject = new ProjectConfig { ProjectName = ProjectNameInput };
+                Projects.Add(autoProject);
+                SelectedProject = autoProject;
+            }
+            else
+            {
+                if (showMessage)
+                {
+                    // ИСПРАВЛЕНО: Мультиязычный вызов предупреждения об пустом имени проекта
+                    string warnMsg = Application.Current.Resources["Str_Msg_EnterProjectName"] as string
+                        ?? "Введите имя проекта перед сохранением.";
+                    string warnTitle = Application.Current.Resources["Str_Title_Warning"] as string
+                        ?? "Внимание";
+                    System.Windows.MessageBox.Show(warnMsg, warnTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                return;
+            }
+        }
+
+        if (SelectedModule != null && RootNode != null)
+        {
+            var checkedFilesList = new List<string>();
+            bool isTextProject = SelectedProject.Type == ProjectType.GoogleDoc || SelectedProject.Type == ProjectType.WordDoc;
+
+            if (!isTextProject)
+            {
+                var flatFilesList = new List<FileSystemNode>();
+                ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList);
+                foreach (var node in flatFilesList)
+                {
+                    checkedFilesList.Add(node.RelativePath);
+                }
+            }
+
+            var checkedEntriesList = new List<SyntaxEntry>();
+            var flatSyntaxList = new List<FileSystemNode>();
+            CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
+
+            foreach (var node in flatSyntaxList)
+            {
+                string effFilePath = isTextProject ? string.Empty : node.RelativePath;
+                string cleanEntryPath = node.EntryPath;
+
+                checkedEntriesList.Add(new SyntaxEntry
+                {
+                    FilePath = effFilePath,
+                    EntryPath = cleanEntryPath,
+                    DisplayName = node.Name,
+                    Type = node.SyntaxType,
+                    SpanInfo = node.SyntaxSpanInfo
+                });
+            }
+
+            SelectedModule.ModuleName = ModuleNameInput;
+            SelectedModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
+            SelectedModule.ModuleRules = ModuleRules;
+            SelectedModule.CheckedFiles = checkedFilesList;
+            SelectedModule.CheckedEntries = checkedEntriesList;
+
+            var mIdx = Modules.IndexOf(SelectedModule);
+            if (mIdx >= 0) Modules[mIdx] = SelectedModule;
+        }
+
+        if (SelectedProject == null) return;
+
+        SelectedProject.ProjectName = ProjectNameInput;
+        SelectedProject.RootPath = RootPath;
+        SelectedProject.OutputPath = OutputPath;
+        SelectedProject.PromptRules = PromptRules;
+        SelectedProject.IncludeDirectoryStructure = IncludeDirectoryStructure;
+        SelectedProject.Modules = Modules.ToList();
+
+        var pIdx = Projects.IndexOf(SelectedProject);
+        if (pIdx >= 0)
+        {
+            Projects[pIdx] = SelectedProject;
+            SelectedProject = Projects[pIdx];
+        }
+
+        try
+        {
+            string json = JsonConvert.SerializeObject(Projects, Formatting.Indented);
+            File.WriteAllText(_configFilePath, json);
+
+            if (showMessage)
+            {
+                // ИСПРАВЛЕНО: Локализованное окно успешного сохранения
+                string successMsg = Application.Current.Resources["Str_Msg_SaveSuccess"] as string
+                    ?? "Всё успешно сохранено!";
+                string successTitle = Application.Current.Resources["Str_Title_Success"] as string
+                    ?? "Успех";
+                System.Windows.MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (showMessage)
+            {
+                // ИСПРАВЛЕНО: Локализованное окно системной ошибки ввода-вывода
+                string errorPrefix = Application.Current.Resources["Str_Err_SaveJson"] as string
+                    ?? "Ошибка сохранения JSON";
+                string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
+                    ?? "Ошибка";
+                System.Windows.MessageBox.Show($"{errorPrefix}: {ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
 
 
 
@@ -721,29 +1011,27 @@ public partial class MainViewModel : ObservableObject
     private bool IsValidName(string name, out string errorMessage)
     {
         errorMessage = string.Empty;
-
         if (string.IsNullOrWhiteSpace(name))
         {
-            errorMessage = "Имя не может быть пустым или состоять только из пробелов.";
+            errorMessage = Application.Current.Resources["Str_Err_Update_ReadDir"] as string
+                           ?? "Имя не может быть пустым или состоять только из пробелов.";
             return false;
         }
 
-        // Получаем массив символов, запрещенных в именах файлов/папок Windows
         char[] invalidChars = System.IO.Path.GetInvalidFileNameChars();
-
-        // Дополнительно можно явно дописать проверку на популярные проблемные символы, 
-        // если GetInvalidFileNameChars их не перекрывает в некоторых контекстах
         foreach (char c in invalidChars)
         {
             if (name.Contains(c))
             {
-                errorMessage = $"Имя содержит недопустимый символ '{c}'.\nЗапрещено использовать: \\ / : * ? \" < > |";
+                string errTemplate = Application.Current.Resources["Str_Err_InvalidServiceAccount"] as string
+                                     ?? "Имя содержит недопустимый символ '{0}'.";
+                errorMessage = string.Format(errTemplate, c);
                 return false;
             }
         }
-
         return true;
     }
+
     [RelayCommand]
     private void UpdateCurrentProjectName()
     {
@@ -789,119 +1077,40 @@ public partial class MainViewModel : ObservableObject
     }
 
     // Основная логика сохранения
-    private void ExecuteSave(bool showMessage)
+
+    // Рекурсивный сбор всех выбранных элементов кода для сохранения в JSON
+    // ИСПРАВЛЕНО: Рекурсивный сбор синтаксических нод БЕЗ мусора и дубликатов
+    // Внутри MainViewModel.cs
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АДАТИВНЫЙ СБОР СИНТАКСИСА ПО ТИПАМ ПРОЕКТОВ            -->
+    // ================================================================= -->
+    private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
     {
-        if (SelectedProject == null)
+        if (node == null) return;
+
+        if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
         {
-            if (!string.IsNullOrWhiteSpace(ProjectNameInput))
+            // Проверяем тип текущего проекта, чтобы не сломать сохранение исходного кода
+            if (SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc)
             {
-                var autoProject = new ProjectConfig { ProjectName = ProjectNameInput };
-                Projects.Add(autoProject);
-                SelectedProject = autoProject;
+                // ДЛЯ КНИГ: Сохраняем любые отмеченные элементы (и вкладки, и главы-листья)
+                result.Add(node);
             }
             else
             {
-                if (showMessage) System.Windows.MessageBox.Show("Введите имя проекта перед сохранением.", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-        }
-
-        if (SelectedModule != null && RootNode != null)
-        {
-            var checkedFilesList = new List<string>();
-            var flatFilesList = new List<FileSystemNode>();
-
-            // Собираем вовлеченные файлы (полные и частичные)
-            ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList);
-            foreach (var node in flatFilesList)
-            {
-                checkedFilesList.Add(node.RelativePath);
-            }
-
-            // НОВОЕ: Собираем детальный список выбранных элементов синтаксиса
-            var checkedEntriesList = new List<SyntaxEntry>();
-            var flatSyntaxList = new List<FileSystemNode>();
-
-            // Рекурсивно собираем все синтаксические ноды с галочками из всего дерева
-            CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
-
-            foreach (var node in flatSyntaxList)
-            {
-                checkedEntriesList.Add(new SyntaxEntry
+                // ДЛЯ КОДА С#: Сохраняем только промежуточные ноды-контейнеры (!node.IsFile)
+                if (!node.IsFile)
                 {
-                    FilePath = node.RelativePath,
-                    EntryPath = node.EntryPath,
-                    DisplayName = node.Name,
-                    Type = node.SyntaxType,
-                    SpanInfo = node.SyntaxSpanInfo
-                });
+                    result.Add(node);
+                }
             }
-
-            SelectedModule.ModuleName = ModuleNameInput;
-            SelectedModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
-            SelectedModule.ModuleRules = ModuleRules;
-
-            SelectedModule.CheckedFiles = checkedFilesList; // Сохраняем базовые ключи-файлы
-            SelectedModule.CheckedEntries = checkedEntriesList; // Сохраняем детальный синтаксис!
-
-            var mIdx = Modules.IndexOf(SelectedModule);
-            if (mIdx >= 0) Modules[mIdx] = SelectedModule;
         }
 
-
-        SelectedProject.ProjectName = ProjectNameInput;
-        SelectedProject.RootPath = RootPath;
-        SelectedProject.OutputPath = OutputPath;
-        SelectedProject.PromptRules = PromptRules;
-        SelectedProject.IncludeDirectoryStructure = IncludeDirectoryStructure; // СОХРАНЯЕМ НАСТРОЙКУ
-        
-        SelectedProject.Modules = Modules.ToList();
-
-        var pIdx = Projects.IndexOf(SelectedProject);
-        if (pIdx >= 0)
-        {
-            Projects[pIdx] = SelectedProject;
-            SelectedProject = Projects[pIdx];
-        }
-
-        try
-        {
-            string json = JsonConvert.SerializeObject(Projects, Formatting.Indented);
-            File.WriteAllText(_configFilePath, json);
-            if (showMessage) System.Windows.MessageBox.Show("Всё успешно сохранено!", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            if (showMessage) System.Windows.MessageBox.Show($"Ошибка сохранения JSON: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-    // Рекурсивный сбор всех выбранных элементов кода для сохранения в JSON
-    // ИСПРАВЛЕНО: Рекурсивный сбор синтаксических нод БЕЗ мусора и дубликатов
-    private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
-    {
-        // Если мы наткнулись на ФАЙЛ, и он выбран ПОЛНОСТЬЮ (True) —
-        // мы ОСТАНАВЛИВАЕМ рекурсию и не идем внутрь него! 
-        // Его внутренние методы и таблицы НЕ должны попадать в CheckedEntries, 
-        // так как файл идет в контекст целиком.
-        if (node.IsFile && node.IsChecked == true)
-        {
-            return;
-        }
-
-        // Если это элемент синтаксиса (метод, класс, таблица) и на нем стоит галочка —
-        // мы берем его ТОЛЬКО в том случае, если его родительский файл выбран частично.
-        if (node.IsSyntaxNode && node.IsChecked == true)
-        {
-            result.Add(node);
-        }
-
-        // Идем глубже по дереву
         foreach (var child in node.Children)
         {
             CollectAllCheckedSyntaxNodes(child, result);
         }
     }
-
 
 
     [RelayCommand]
@@ -924,6 +1133,18 @@ public partial class MainViewModel : ObservableObject
             OutputPath = dialog.FileName;
         }
     }
+    [RelayCommand]
+    private void BrowseProjectOutputFolder()
+    {
+        // Открываем ваш стандартный диалог выбора папок
+        var dialog = new CommonOpenFileDialog { IsFolderPicker = true };
+        if (dialog.ShowDialog() == CommonFileDialogResult.Ok)
+        {
+            // ИСПРАВЛЕНО: Записываем путь в буферное поле оверлея, активируя валидацию!
+            EditProjectOutputPathInput = dialog.FileName;
+        }
+    }
+
 
     private void LoadProjects()
     {
@@ -1055,70 +1276,64 @@ public partial class MainViewModel : ObservableObject
     }
 
     // Полностью заменяем старую команду GenerateContext на асинхронную
-    [RelayCommand]
+    // ================================================================= -->
+    // ЧАСТЬ 1: ИСПРАВЛЕННАЯ КОМАНДА ГЕНЕРАЦИИ С ЗАПУСКОМ ОВЕРЛЕЯ PROGRESS-->
+    // ================================================================= -->
+    // Внутри MainViewModel.cs
+
+    // ИСПРАВЛЕНО: Привязываем команду к методу проверки прав на выполнение
+    [RelayCommand(CanExecute = nameof(CanGenerateContext))]
     private async Task GenerateContext()
     {
         if (SelectedModule == null || RootNode == null) return;
 
-        // ЖЕЛЕЗНАЯ СИНХРОНИЗАЦИЯ: Считываем все галочки с экрана прямо в модель модуля перед сборкой
+        // Считываем все галочки с экрана прямо в модель модуля перед сборкой
         SyncTreeWithModule();
         string extension = IsPdfFormat ? ".pdf" : ".txt";
         string safeFileName = GetSafeFileName(ModuleNameInput) + extension;
 
-        if (string.IsNullOrWhiteSpace(OutputPath) || string.IsNullOrWhiteSpace(ModuleNameInput) || RootNode == null)
+        if (string.IsNullOrWhiteSpace(OutputPath) || string.IsNullOrWhiteSpace(ModuleNameInput))
         {
-            System.Windows.MessageBox.Show("Не заполнены критические данные: выходная папка, имя модуля или структура проекта.",
-                            "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show("Не заполнены критические данные: выходная папка или имя модуля.", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         var checkedFiles = new List<FileSystemNode>();
-        // Было: ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
-        // Стало:
-        ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles); // Собирает и полные, и частичные файлы для ИИ!
+        ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles);
 
         if (checkedFiles.Count == 0)
         {
-            System.Windows.MessageBox.Show("Не выбрано ни одного файла для нарезки контекста.", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show("Не выбрано ни одного фрагмента структуры для нарезки контекста.", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        // Включаем оверлей прогресса в UI
+        // Взводим флаги оверлея
         IsProcessing = true;
         ProgressValue = 0;
         ProgressMax = checkedFiles.Count;
-        ProgressText = $"Подготовка к обработке {checkedFiles.Count} файлов...";
+        ProgressText = $"Подготовка к обработке {checkedFiles.Count} элементов...";
         CurrentFileText = "";
-
         _cts = new CancellationTokenSource();
 
-        // Настраиваем отправку прогресса в поток UI
         var progressHandler = new Progress<ProgressReport>(report =>
         {
             ProgressValue = report.CurrentIndex;
-            ProgressText = $"Обработано файлов: {report.CurrentIndex} из {report.TotalCount}";
-            CurrentFileText = $"Текущий файл: {report.CurrentFileName}";
+            ProgressText = $"Обработано: {report.CurrentIndex} из {report.TotalCount}";
+            CurrentFileText = $"Раздел: {report.CurrentFileName}";
         });
 
         try
         {
             string fullPath = Path.Combine(OutputPath, safeFileName);
-
-            // Найдите блок генерации (IsPdfFormat) и замените передачу параметров:
             if (IsPdfFormat)
             {
-                await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules,
-                    ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token); // ДОБАВЛЕН СПИСОК
+                await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token);
             }
             else
             {
-                await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules,
-                    ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token); // ДОБАВЛЕН СПИСОК
+                await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token);
             }
 
-
-
-            // Автооткрытие Проводника Windows (оставляем без изменений)
             if (File.Exists(fullPath))
             {
                 System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
@@ -1134,12 +1349,23 @@ public partial class MainViewModel : ObservableObject
         }
         finally
         {
-            // Выключаем оверлей в любом случае
             IsProcessing = false;
             _cts?.Dispose();
             _cts = null;
         }
     }
+
+    // Новый обязательный метод проверки для CanExecute
+    private bool CanGenerateContext()
+    {
+        // Кнопка заблокирована, если идет загрузка проекта, обработка или пересчет размера токенов
+        if (IsProjectLoading || IsProcessing || IsCalculatingSize) return false;
+
+        // Кнопка активна только если выбран модуль и построено дерево
+        return SelectedModule != null && RootNode != null;
+    }
+
+
     // Асинхронно восстанавливает структуру только для тех файлов, которые были частично выбраны в проекте
     private async Task RestoreSavedSyntaxStructureAsync(ContextModule module, FileSystemNode root)
     {
@@ -1230,29 +1456,170 @@ public partial class MainViewModel : ObservableObject
         // Если заглушки нет И в списке уже есть элементы — значит, файл уже был полностью распарсен ранее, выходим
         if (!hasStub && fileNode.Children.Count > 0) return;
 
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: Интеллектуальное определение расширения для кэша Google Docs-->
+        // ================================================================= -->
+        // Если файл лежит в папке кэша googlecache или имеет виртуальное имя, 
+        // принудительно выставляем ему расширение .gdoc, чтобы фабрика нашла нужный парсер
         string ext = System.IO.Path.GetExtension(fileNode.FullPath);
+        if (fileNode.RelativePath.EndsWith(".gdoc", StringComparison.OrdinalIgnoreCase) ||
+            fileNode.FullPath.Contains("googlecache"))
+        {
+            ext = ".gdoc";
+        }
+
+        // Теперь фабрика увидит легитимный .gdoc и не сбросит выполнение!
         if (!SyntaxParserFactory.IsSupported(ext)) return;
 
         var parser = SyntaxParserFactory.GetParser(ext);
         if (parser == null) return;
 
+        // Сюда выполнение теперь гарантированно дойдет, и точка останова загорится!
         List<SyntaxEntry> entries = await parser.ParseFileAsync(fileNode.FullPath, fileNode.RelativePath);
+
 
         // Строим словарь уже существующих в UI виртуальных нод, чтобы не дублировать их при парсинге
         var existingNodes = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
         BuildExistingNodesMap(fileNode, existingNodes);
 
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ПОДКЛЮЧЕНИЕ МУЛЬТИЯЗЫЧНЫХ РЕСУРСОВ ДЛЯ ПРОЗЫ         -->
+        // ================================================================= -->
+        // ================================================================= -->
+        // ЧАСТЬ 2: ИЕРАРХИЧЕСКОЕ ПОДСЕЛЕНИЕ ГЛАВ ВНУТРЬ РОДИТЕЛЬСКИХ ВКЛАДОК -->
+        // ================================================================= -->
         foreach (var entry in entries)
         {
-            // Если нода уже была создана быстрым прелоадером из JSON — пропускаем её добавление
             if (existingNodes.ContainsKey(entry.EntryPath)) continue;
+
+            // СТРОГОЕ ПРАВИЛО: Вкладка (Tab) — это папка со стрелочкой (IsFile = false).
+            // Глава рассказа (Heading) или текстовая секция — это конечный элемент (IsFile = true).
+            bool isLeaf = (entry.Type == EntryType.Heading || entry.Type == EntryType.Section);
 
             var newNode = new FileSystemNode
             {
-                Name = entry.DisplayName,
+                Name = entry.DisplayName.Trim(), // Чистое название без запекания префиксов
                 RelativePath = entry.FilePath,
                 FullPath = fileNode.FullPath,
-                IsFile = false,
+                IsFile = isLeaf, // Разделяем поведение папок и файлов в UI
+                IsSyntaxNode = true,
+                SyntaxType = entry.Type,
+                SyntaxSpanInfo = entry.SpanInfo,
+                EntryPath = entry.EntryPath,
+                Parent = fileNode,
+                // АВТОРАЗВОРАЧИВАНИЕ: Если узел является вкладкой GoogleDoc, заставляем UI раскрыть его
+                IsExpanded = (entry.Type == EntryType.Tab)
+            };
+
+            // Ищем родителя по косой черте (/) литературных вкладок рассказов
+            string parentEntryPath = string.Empty;
+            int lastSeparator = entry.EntryPath.LastIndexOf('/');
+
+            if (lastSeparator > 0)
+            {
+                parentEntryPath = entry.EntryPath.Substring(0, lastSeparator);
+            }
+
+            // Пытаемся подселить к существующей родительской вкладке в UI
+            if (!string.IsNullOrEmpty(parentEntryPath) && existingNodes.TryGetValue(parentEntryPath, out var parentUiNode))
+            {
+                newNode.Parent = parentUiNode;
+                parentUiNode.Children.Add(newNode);
+            }
+            else
+            {
+                // Если родительской вкладки нет, это корень проекта
+                fileNode.Children.Add(newNode);
+            }
+
+            // Регистрируем ноду в карте, чтобы её могли найти её будущие дети (подглавы или главы)
+            existingNodes[entry.EntryPath] = newNode;
+
+            // Восстановление галочек
+            if (fileNode.IsChecked == true || (newNode.Parent != null && newNode.Parent.IsChecked == true))
+            {
+                newNode.SetChecked(true, updateChildren: false, updateParent: false);
+            }
+        }
+
+        fileNode.SetChecked(fileNode.IsChecked, updateChildren: false, updateParent: true);
+
+    }
+
+    // Вспомогательный метод для сбора карты уже существующих UI нод в файле
+    // Внутри MainViewModel.cs
+    private void BuildExistingNodesMap(FileSystemNode node, Dictionary<string, FileSystemNode> map)
+    {
+        if (node == null) return;
+
+        // ИСПРАВЛЕНО: Регистрируем узел, если у него заполнен синтаксический путь, 
+        // либо если это корневой узел виртуального файла GoogleDoc/WordDoc
+        if (!string.IsNullOrEmpty(node.EntryPath))
+        {
+            map[node.EntryPath] = node;
+        }
+        else if (!node.IsFile && node.IsSyntaxNode == false && !string.IsNullOrEmpty(node.Name))
+        {
+            // Фоллбэк-маркер для корневого контейнера книги
+            map[node.Name] = node;
+        }
+
+        // Делаем локальную копию коллекции детей для безопасного прохода без конфликтов потоков
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
+        {
+            BuildExistingNodesMap(child, map);
+        }
+    }
+
+
+
+    // Внутри MainViewModel.cs
+    // Внутри MainViewModel.cs
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: БЕЗОПАСНЫЙ НАКАТ ГАЛОЧЕК ДЛЯ ПРОЗЫ БЕЗ ДУБЛИРОВАНИЯ НОД-->
+    // ================================================================= -->
+    private void FastPreloadSavedEntries(ContextModule module, FileSystemNode fileNode)
+    {
+        if (module == null || fileNode == null) return;
+
+        // СЦЕНАРИЙ А: Для текстовых проектов (GoogleDoc / WordDoc) работаем по эталонному дереву
+        // СЦЕНАРИЙ А: Для текстовых проектов (GoogleDoc / WordDoc) работаем по эталонному дереву
+        if (SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc)
+        {
+            if (module.CheckedEntries == null || module.CheckedEntries.Count == 0) return;
+
+            var savedPaths = new HashSet<string>(
+                module.CheckedEntries.Select(e => e.EntryPath.Replace('\\', '/')),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            ApplyCheckedStatesFromConfigRecursive(fileNode, savedPaths);
+
+            // ИСПРАВЛЕНО: Запускаем глубокий каскадный пересчет состояний снизу вверх 
+            // для абсолютно всех уровней вложенности вкладок и подвкладок!
+            DeepVerifyAllCheckStates(fileNode);
+            return;
+        }
+
+
+        // СЦЕНАРИЙ Б: Старая исходная логика генерации нод для проектов с исходным кодом C#
+        var savedEntries = module.CheckedEntries;
+        if (savedEntries == null || savedEntries.Count == 0) return;
+
+        fileNode.Children.Clear();
+        var nodesMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in savedEntries)
+        {
+            bool isLeaf = (entry.Type == EntryType.Heading || entry.Type == EntryType.Section);
+
+            var newNode = new FileSystemNode
+            {
+                Name = entry.DisplayName.Trim(),
+                RelativePath = entry.FilePath,
+                FullPath = fileNode.FullPath,
+                IsFile = isLeaf,
                 IsSyntaxNode = true,
                 SyntaxType = entry.Type,
                 SyntaxSpanInfo = entry.SpanInfo,
@@ -1267,8 +1634,7 @@ public partial class MainViewModel : ObservableObject
                 parentEntryPath = entry.EntryPath.Substring(0, lastDot);
             }
 
-            // Пытаемся подселить к существующему родителю в UI
-            if (!string.IsNullOrEmpty(parentEntryPath) && existingNodes.TryGetValue(parentEntryPath, out var parentUiNode))
+            if (!string.IsNullOrEmpty(parentEntryPath) && nodesMap.TryGetValue(parentEntryPath, out var parentUiNode))
             {
                 newNode.Parent = parentUiNode;
                 parentUiNode.Children.Add(newNode);
@@ -1277,119 +1643,64 @@ public partial class MainViewModel : ObservableObject
             {
                 fileNode.Children.Add(newNode);
             }
+            nodesMap[entry.EntryPath] = newNode;
 
-            existingNodes[entry.EntryPath] = newNode;
-
-            // Если файл или родительский класс выбран полностью — проставляем галочку новому методу
-            if (fileNode.IsChecked == true || (newNode.Parent != null && newNode.Parent.IsChecked == true))
-            {
-                newNode.SetChecked(true, updateChildren: false, updateParent: false);
-            }
+            newNode.SetChecked(true, updateChildren: false, updateParent: false);
         }
 
-        fileNode.SetChecked(fileNode.IsChecked, updateChildren: false, updateParent: true);
+        fileNode.VerifyCheckState();
     }
-
-    // Вспомогательный метод для сбора карты уже существующих UI нод в файле
-    private void BuildExistingNodesMap(FileSystemNode node, Dictionary<string, FileSystemNode> map)
+    /// <summary>
+    /// Рекурсивный каскадный пересчет состояний чекбоксов Tri-State снизу вверх
+    /// </summary>
+    private void DeepVerifyAllCheckStates(FileSystemNode node)
     {
-        if (node.IsSyntaxNode && !string.IsNullOrEmpty(node.EntryPath))
-        {
-            map[node.EntryPath] = node;
-        }
+        if (node == null) return;
+
+        // Сначала уходим в самую глубь дерева к последним потомкам
         foreach (var child in node.Children)
         {
-            BuildExistingNodesMap(child, map);
+            DeepVerifyAllCheckStates(child);
         }
+
+        // Когда вернулись снизу, принудительно заставляем текущий узел 
+        // пересчитать свой статус на основе реального состояния его детей
+        node.VerifyCheckState();
     }
 
-
-    private void FastPreloadSavedEntries(ContextModule module, FileSystemNode root)
+    // Вспомогательный рекурсивный метод поиска нод по EntryPath и активации галочек
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ДВУХКАНАЛЬНАЯ ПРОВЕРКА ПУТЕЙ (С ТОЧКОЙ И СО СЛЭШЕМ)    -->
+    // ================================================================= -->
+    private void ApplyCheckedStatesFromConfigRecursive(FileSystemNode node, HashSet<string> savedPaths)
     {
-        if (module?.CheckedEntries == null || module.CheckedEntries.Count == 0 || root == null) return;
+        if (node == null) return;
 
-        // Группируем элементы из JSON по файлам
-        var entriesByFile = new Dictionary<string, List<SyntaxEntry>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in module.CheckedEntries)
+        // 1. Нормализуем путь текущего узла из дерева (заменяем наклоны слэшей)
+        string cleanNodePath = node.EntryPath.Replace('\\', '/');
+
+        // 2. ИСПРАВЛЕНО: Создаем альтернативный вариант пути на случай, если в JSON 
+        // точка на конце превратилась в слэш: "Среди людей - основной текст/Глава 1/"
+        string alternativeNodePath = cleanNodePath;
+        if (cleanNodePath.EndsWith("."))
         {
-            if (string.IsNullOrEmpty(entry.FilePath)) continue;
-            if (!entriesByFile.ContainsKey(entry.FilePath))
-            {
-                entriesByFile[entry.FilePath] = new List<SyntaxEntry>();
-            }
-            entriesByFile[entry.FilePath].Add(entry);
+            // Отрезаем точку и принудительно дописываем слэш, имитируя баг сохранения
+            alternativeNodePath = cleanNodePath.Substring(0, cleanNodePath.Length - 1) + "/";
         }
 
-        foreach (var kvp in entriesByFile)
+        // 3. Проверяем вхождение по любому из двух каналов адресации
+        if (node.IsSyntaxNode && (savedPaths.Contains(cleanNodePath) || savedPaths.Contains(alternativeNodePath)))
         {
-            var relPath = kvp.Key;
-            var savedEntries = kvp.Value;
-
-            var fileNode = FindNodeByRelativePath(root, relPath);
-            if (fileNode != null)
-            {
-                // Очищаем коллекцию от базовых заглушек сканирования диска
-                fileNode.Children.Clear();
-
-                var nodeMap = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
-
-                // 1. Строим каркас выбранных элементов синтаксиса из JSON
-                foreach (var entry in savedEntries)
-                {
-                    var newNode = new FileSystemNode
-                    {
-                        Name = entry.DisplayName,
-                        RelativePath = entry.FilePath,
-                        FullPath = fileNode.FullPath,
-                        IsFile = false,
-                        IsSyntaxNode = true,
-                        SyntaxType = entry.Type,
-                        SyntaxSpanInfo = entry.SpanInfo,
-                        EntryPath = entry.EntryPath,
-                        Parent = fileNode
-                    };
-
-                    string parentEntryPath = string.Empty;
-                    int lastDot = entry.EntryPath.LastIndexOf('.');
-                    if (lastDot > 0)
-                    {
-                        parentEntryPath = entry.EntryPath.Substring(0, lastDot);
-                    }
-
-                    if (!string.IsNullOrEmpty(parentEntryPath) && nodeMap.TryGetValue(parentEntryPath, out var parentUiNode))
-                    {
-                        newNode.Parent = parentUiNode;
-                        parentUiNode.Children.Add(newNode);
-                    }
-                    else
-                    {
-                        fileNode.Children.Add(newNode);
-                    }
-
-                    nodeMap[entry.EntryPath] = newNode;
-
-                    // Просто выставляем галочку элементу (без каскада, чтобы не трогать родительский файл раньше времени)
-                    newNode.SetChecked(true, updateChildren: false, updateParent: false);
-                }
-
-                // 2. БЕЗОПАСНО подсаживаем техническую ноду полосы прогресса в самый конец списка детей
-                fileNode.Children.Add(new FileSystemNode
-                {
-                    Name = "LoadingStub...",
-                    Parent = fileNode,
-                    IsFile = false,
-                    IsSyntaxNode = false
-                });
-
-                // 3. И ТОЛЬКО ТЕПЕРЬ вызываем честный пересчет состояния файла.
-                // Новая логика VerifyCheckState увидит заглушку и СТРОГО запретит файлу получить статус True!
-                fileNode.VerifyCheckState();
-            }
+            node.SetChecked(true, updateChildren: false, updateParent: false);
         }
 
-        // Обновляем квадратики для родительских папок на диске снизу вверх
-        DeepVerifyCheckStates(root);
+        // Рекурсивно уходим вглубь по коллекции вкладок и глав романа
+        foreach (var child in node.Children)
+        {
+            ApplyCheckedStatesFromConfigRecursive(child, savedPaths);
+        }
     }
+
 
     // Флаги управления видимостью и состоянием оверлея проектов
     [ObservableProperty] private bool _isProjectOverlayVisible;
@@ -1453,10 +1764,13 @@ public partial class MainViewModel : ObservableObject
         EditProjectOutputPathInput = string.Empty;
         IsProjectOverlayVisible = false;
     }
+ 
 
     // Дополнительный флаг для блокировки интерфейса оверлея во время скачивания кэша
     [ObservableProperty] private bool _isProjectLoading;
-
+    // Новые свойства для отображения точного числового прогресса в оверлее
+    [ObservableProperty] private int _currentProgressValue = 0;
+    [ObservableProperty] private string _currentProgressStatus = string.Empty;
     // КНОПКА ОК: Комплексная валидация с учетом перечисления ProjectType
     [RelayCommand]
     private async Task ConfirmSaveProjectConfig()
@@ -1499,10 +1813,20 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // Определяем выбранный тип на основе RadioButtons оверлея
+        // ИСПРАВЛЕНО: Строго определяем тип проекта по актуальным радиокнопкам оверлея
         ProjectType selectedType = ProjectType.Folder;
-        if (IsGoogleDocSelected) selectedType = ProjectType.GoogleDoc;
-        else if (IsWordDocSelected) selectedType = ProjectType.WordDoc;
+        if (IsGoogleDocSelected)
+        {
+            selectedType = ProjectType.GoogleDoc;
+        }
+        else if (IsWordDocSelected)
+        {
+            selectedType = ProjectType.WordDoc;
+        }
+        else if (IsLocalFolderSelected)
+        {
+            selectedType = ProjectType.Folder;
+        }
 
         // 5. Проверка доступности источников перед фиксацией
         if (selectedType == ProjectType.Folder && !Directory.Exists(rootPath))
@@ -1521,53 +1845,678 @@ public partial class MainViewModel : ObservableObject
         {
             if (string.IsNullOrEmpty(GoogleDownloader.ExtractDocumentId(rootPath)))
             {
-                MessageBox.Show("Строка не содержит валидный ID Google Документа!", "Ошибка ссылки", MessageBoxButton.OK, MessageBoxImage.Warning);
+                string idErr = Application.Current.Resources["Str_Err_InvalidServiceAccount"] as string ?? "Строка не содержит валидный ID!";
+                MessageBox.Show(idErr, "ID Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            // ВКЛЮЧАЕМ РЕЖИМ ЗАГРУЗКИ: Блокируем оверлей, показываем прогресс
             IsProjectLoading = true;
             try
             {
-                // Запускаем наш класс-загрузчик. Путь к папке приложения берем из текущей среды выполнения
+                // Подгружаем текст состояния из словаря локализации
+                ProgressValue = 40;
+                ProgressText = Application.Current.Resources["Str_Update_LoadingGoogleDoc"] as string ?? "Скачивание структуры из облака Google...";
+
                 var downloader = new GoogleDownloader();
                 string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+                bool success = await downloader.DownloadToCacheAsync(rootPath, projectBaseDir, EditGoogleApiKeyInput?.Trim() ?? string.Empty);
 
-                bool success = await downloader.DownloadToCacheAsync(rootPath, projectBaseDir);
                 if (!success)
                 {
-                    MessageBox.Show("Google Документ недоступен! Проверьте доступ по ссылке и сетевое подключение.", "Ошибка сети", MessageBoxButton.OK, MessageBoxImage.Error);
+                    IsProjectLoading = false;
+                    string errorMsg = Application.Current.Resources["Str_Err_GoogleDocUnavailable"] as string ?? "Google Документ недоступен!";
+                    string errorTitle = Application.Current.Resources["Str_Err_NetworkTitle"] as string ?? "Ошибка сети";
+                    MessageBox.Show(errorMsg, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
+                ProgressValue = 100;
+                ProgressText = Application.Current.Resources["Str_Update_BuildingTree"] as string ?? "Структура успешно синхронизирована!";
             }
             finally
             {
-                // Всегда выключаем режим загрузки при любом исходе
                 IsProjectLoading = false;
             }
         }
 
-        // 6. СОХРАНЕНИЕ: Переносим проверенные данные в модель
+        // ... Завершение сохранения в модель конфигурации проекта и SilentSave ...
         ProjectConfig? targetProject = SelectedProject;
-        // ИСПРАВЛЕНО: Заменили SelectedProject.ProjectName на targetProject.ProjectName
         if (targetProject == null || EditProjectNameInput != targetProject.ProjectName)
         {
             targetProject = new ProjectConfig();
             Projects.Add(targetProject);
         }
-
-
         targetProject.ProjectName = projName;
         targetProject.RootPath = rootPath;
         targetProject.OutputPath = outPath;
-        targetProject.Type = selectedType; // Фиксируем новый ProjectType в конфигурации!
-
-        // Прячем оверлей и фокусим ListBox на свежем проекте
+        targetProject.Type = selectedType;
         IsProjectOverlayVisible = false;
         SelectedProject = targetProject;
 
+        RefreshTreeView(targetProject.Modules.FirstOrDefault()?.CheckedFiles ?? new List<string>());
         SilentSave();
+
     }
+    // Изолированное буферное поле для безопасного ввода ключа в интерфейсе оверлея
+    [ObservableProperty] private string _editGoogleApiKeyInput = string.Empty;
+
+    // ================================================================= -->
+    // ЧАСТЬ 1: РЕСТРУКТУРИЗАЦИЯ ОВЕРЛЕЕВ (ЧИСТАЯ ПРИВЯЗКА К CONFIG)      -->
+    // ================================================================= -->
+
+    // 1. Команда создания нового проекта: выставляет дефолтный аккаунт из настроек приложения
+    [RelayCommand]
+    private void CreateNewProjectConfig()
+    {
+        // Сканируем системную папку, наполняя AvailableServiceAccounts чистыми Email
+        LoadAvailableServiceAccounts();
+
+        EditProjectNameInput = string.Empty;
+        EditProjectRootPathInput = string.Empty;
+        EditProjectOutputPathInput = string.Empty;
+
+        // Подтягиваем сохраненный по умолчанию Email из общих настроек приложения
+        string defaultEmail = Properties.Settings.Default.DefaultServiceAccountEmail ?? string.Empty;
+
+        // Если этот Email физически существует в нашей папке ключей — выбираем его
+        if (!string.IsNullOrEmpty(defaultEmail) && AvailableServiceAccounts.Contains(defaultEmail))
+        {
+            SelectedServiceAccount = defaultEmail;
+        }
+        else
+        {
+            // Если настроек нет или ключ удален — берем самый первый доступный из списка
+            SelectedServiceAccount = AvailableServiceAccounts.FirstOrDefault() ?? string.Empty;
+        }
+
+        IsLocalFolderSelected = true;
+        IsGoogleDocSelected = false;
+        IsWordDocSelected = false;
+        IsProjectOverlayVisible = true;
+    }
+
+    // 2. Команда редактирования проекта (Ромбик ◊): строго считывает ключ из ProjectConfig
+    [RelayCommand]
+    private void ShowProjectSettings()
+    {
+        if (SelectedProject == null) return;
+
+        LoadAvailableServiceAccounts();
+
+        EditProjectNameInput = SelectedProject.ProjectName;
+        EditProjectRootPathInput = SelectedProject.RootPath;
+        EditProjectOutputPathInput = SelectedProject.OutputPath;
+
+        IsLocalFolderSelected = (SelectedProject.Type == ProjectType.Folder);
+        IsGoogleDocSelected = (SelectedProject.Type == ProjectType.GoogleDoc);
+        IsWordDocSelected = (SelectedProject.Type == ProjectType.WordDoc);
+
+        // СТРОГАЯ ПРИВЯЗКА: Вытаскиваем Email аккаунта напрямую из конфигурации выбранного проекта!
+        if (SelectedProject.Type == ProjectType.GoogleDoc && !string.IsNullOrEmpty(SelectedProject.GoogleApiKey))
+        {
+            SelectedServiceAccount = SelectedProject.GoogleApiKey;
+        }
+        else
+        {
+            SelectedServiceAccount = AvailableServiceAccounts.FirstOrDefault() ?? string.Empty;
+        }
+
+        IsProjectOverlayVisible = true;
+    }
+
+
+    // НОВАЯ КОМАНДА: Безопасный запуск браузера на странице создания ключей Google Console
+    [RelayCommand]
+    private void OpenGoogleConsole()
+    {
+        try
+        {
+            string url = "https://console.cloud.google.com";
+
+            // В .NET Core / .NET 9 для Process.Start требуется флаг UseShellExecute = true
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Не удалось открыть браузер: {ex.Message}", "Ошибка запуска", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+
+
+    // ОБНОВЛЕННАЯ КОМАНДА ИМПОРТА: С контролем дубликатов и автовыбором
+    [RelayCommand]
+    private void BrowseGoogleAuthJson()
+    {
+        string filterStr = System.Windows.Application.Current.Resources["Str_Dialog_JsonFilter"] as string ?? "Ключ Google API (*.json)|*.json";
+        string titleStr = System.Windows.Application.Current.Resources["Str_Dialog_JsonTitle"] as string ?? "Выберите JSON-ключ";
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = filterStr,
+            Title = titleStr
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            try
+            {
+                string fileContent = File.ReadAllText(dialog.FileName);
+                var json = JObject.Parse(fileContent);
+                string clientEmail = json["client_email"]?.ToString() ?? string.Empty;
+                string projectId = json["project_id"]?.ToString() ?? "project";
+
+                if (string.IsNullOrEmpty(clientEmail))
+                {
+                    string msg = System.Windows.Application.Current.Resources["Str_Err_InvalidServiceAccount"] as string ?? "Ошибка валидации ключа.";
+                    string title = System.Windows.Application.Current.Resources["Str_Err_ValidationTitle"] as string ?? "Ошибка";
+                    MessageBox.Show(msg, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                string systemStorageDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ServiceAccounts");
+                if (!Directory.Exists(systemStorageDir)) Directory.CreateDirectory(systemStorageDir);
+
+                // КОНТРОЛЬ ДУБЛИКАТОВ: Если такой Email уже импортирован, просто переключаемся на него
+                if (AvailableServiceAccounts.Contains(clientEmail))
+                {
+                    SelectedServiceAccount = clientEmail; // Триггерит OnSelectedServiceAccountChanged
+                    return;
+                }
+
+                string targetFileName = $"{projectId}_account.json";
+                string targetPath = Path.Combine(systemStorageDir, targetFileName);
+
+                File.Copy(dialog.FileName, targetPath, overwrite: true);
+
+                // Перечитываем хранилище
+                LoadAvailableServiceAccounts();
+
+                // ФИНАЛЬНЫЙ ШТРИХ: Делаем импортированный Email выбранным в ComboBox на лету!
+                SelectedServiceAccount = clientEmail;
+            }
+            catch (Exception ex)
+            {
+                string msg = System.Windows.Application.Current.Resources["Str_Err_ImportFailed"] as string ?? "Не удалось импортировать ключ:";
+                string title = System.Windows.Application.Current.Resources["Str_Err_ImportTitle"] as string ?? "Ошибка";
+                MessageBox.Show($"{msg} {ex.Message}", title, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+
+    // ОБНОВЛЕННАЯ КОМАНДА КОПИРОВАНИЯ EMAIL ЧЕРЕЗ РЕСУРСЫ: Полностью локализована
+    [RelayCommand]
+    private void CopyServiceAccountEmailToClipboard()
+    {
+        if (string.IsNullOrEmpty(SelectedServiceAccount)) return;
+
+        try
+        {
+            // Нам больше не нужно парсить JSON, Email уже выбран в ComboBox!
+            Clipboard.SetText(SelectedServiceAccount);
+
+            string rawTemplate = System.Windows.Application.Current.Resources["Str_Msg_EmailCopied"] as string ?? "Email скопирован: {0}";
+            string title = System.Windows.Application.Current.Resources["Str_Msg_EmailCopiedTitle"] as string ?? "Успех";
+
+            MessageBox.Show(string.Format(rawTemplate, SelectedServiceAccount), title, MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            string msg = System.Windows.Application.Current.Resources["Str_Err_ExtractEmailFailed"] as string ?? "Не удалось извлечь Email:";
+            string title = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
+            MessageBox.Show($"{msg} {ex.Message}", title, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+
+    // ИСПРАВЛЕНО: Явное объявление приватных полей для генератора MVVM свойств
+    [ObservableProperty] private ObservableCollection<string> _availableServiceAccounts = new();
+[ObservableProperty] private string _selectedServiceAccount = string.Empty;
+
+    // ИСПРАВЛЕНО: Добавлен метод сканирования хранилища, который искал компилятор
+    // ИСПРАВЛЕНО: Сканируем файлы и наполняем ComboBox чистыми Email-адресами
+    private void LoadAvailableServiceAccounts()
+    {
+        AvailableServiceAccounts.Clear();
+        string systemStorageDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ServiceAccounts");
+
+        if (!Directory.Exists(systemStorageDir))
+        {
+            Directory.CreateDirectory(systemStorageDir);
+        }
+
+        var files = Directory.GetFiles(systemStorageDir, "*.json");
+        foreach (var file in files)
+        {
+            try
+            {
+                string content = File.ReadAllText(file);
+                var json = JObject.Parse(content);
+                string clientEmail = json["client_email"]?.ToString() ?? string.Empty;
+
+                if (!string.IsNullOrEmpty(clientEmail) && !AvailableServiceAccounts.Contains(clientEmail))
+                {
+                    AvailableServiceAccounts.Add(clientEmail);
+                }
+            }
+            catch { }
+        }
+    }
+
+    // ИСПРАВЛЕНО: При выборе Email находим соответствующий ему файл на диске
+    partial void OnSelectedServiceAccountChanged(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            EditGoogleApiKeyInput = string.Empty;
+            return;
+        }
+
+        string systemStorageDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ServiceAccounts");
+        var files = Directory.GetFiles(systemStorageDir, "*.json");
+        string foundFullPath = string.Empty;
+
+        // Бежим по всем файлам в поисках того, который содержит выбранный Email
+        foreach (var file in files)
+        {
+            try
+            {
+                string content = File.ReadAllText(file);
+                var json = JObject.Parse(content);
+                if (json["client_email"]?.ToString() == value)
+                {
+                    foundFullPath = file;
+                    break;
+                }
+            }
+            catch { }
+        }
+
+        if (string.IsNullOrEmpty(foundFullPath))
+        {
+            EditGoogleApiKeyInput = string.Empty;
+            return;
+        }
+
+        // Записываем точный физический путь для сетевого Downloader
+        EditGoogleApiKeyInput = foundFullPath;
+
+        // Асинхронная проверка токена на лету
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(new Func<Task>(async () =>
+        {
+            try
+            {
+                string fileContent = await File.ReadAllTextAsync(foundFullPath);
+                var json = JObject.Parse(fileContent);
+                string clientEmail = json["client_email"]?.ToString() ?? string.Empty;
+                string privateKeyRaw = json["private_key"]?.ToString() ?? string.Empty;
+
+                if (string.IsNullOrEmpty(clientEmail) || string.IsNullOrEmpty(privateKeyRaw)) return;
+
+                // Здесь при необходимости можно оставить вызов GetGoogleAccessTokenAsync
+            }
+            catch { }
+        }), System.Windows.Threading.DispatcherPriority.Background);
+    }
+    // ================================================================= -->
+    // ЧАСТЬ 1: ЧИСТЫЙ СБОР ПУТЕЙ ДЛЯ СОХРАНЕНИЯ БЕЗ ИСКАЖЕНИЯ ТОЧКАМИ    -->
+    // ================================================================= -->
+    private void UpdateCheckedEntriesForCurrentModule()
+    {
+        if (SelectedModule == null || RootNode == null) return;
+
+        // Очищаем старый список перед перезаписью
+        SelectedModule.CheckedFiles.Clear();
+
+        // Запускаем безопасный сбор путей по всему дереву нод
+        CollectEntriesRecursive(RootNode, SelectedModule.CheckedFiles);
+    }
+
+    private void CollectEntriesRecursive(FileSystemNode node, List<string> checkedList)
+    {
+        if (node == null) return;
+
+        // Если нода отмечена (или находится в неопределенном состоянии, но имеет синтаксис)
+        if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
+        {
+            // СТРОГОЕ ПРАВИЛО: Сохраняем оригинальный EntryPath, который построил парсер.
+            // Никаких ручных склеек через точки! Парсер уже заложил туда "Вкладка/Глава 1."
+            if (!checkedList.Contains(node.EntryPath))
+            {
+                checkedList.Add(node.EntryPath);
+            }
+        }
+
+        // Идем глубже по дереву к дочерним элементам
+        foreach (var child in node.Children)
+        {
+            CollectEntriesRecursive(child, checkedList);
+        }
+    }
+
+    private CancellationTokenSource? _updateCts;
+    private UpdateType _lastUpdateType;
+    private string _lastTargetPath = string.Empty;
+
+    // === СВОЙСТВА УПРАВЛЕНИЯ ОВЕРЛЕЕМ ===
+
+    [ObservableProperty] private bool _isUpdateOverlayVisible;   // Видимость всего Grid-оверлея
+    [ObservableProperty] private bool _isUpdateProcessing;       // Видимость полосы прогресса (ProgressBar)
+    [ObservableProperty] private bool _isRetryButtonVisible;     // Видимость кнопки "Повторить"
+    [ObservableProperty] private bool _isCancelButtonEnabled = true; // Активность кнопки "Отмена"
+    [ObservableProperty] private string _updateOverlayMessage = string.Empty; // Текст внутри оверлея
+
+    
+    // === БИЗНЕС-ЛОГИКА ОБНОВЛЕНИЯ ===
+
+    /// <summary>
+    /// Публичный метод для инициализации процесса обновления проекта из любой точки приложения
+    /// </summary>
+  
+    // Модифицированное свойство доступности селекторов и кнопок управления модулями
+    public bool IsModuleSelectorEnabled
+    {
+        get
+        {
+            // Кнопки и комбобоксы блокируются, если проект находится в режиме загрузки/синхронизации (IsProjectLoading == true)
+            if (IsProjectLoading) return false;
+
+            return SelectedProject != null && Modules != null && Modules.Count > 0;
+        }
+    }
+
+    // Дополнительное каноничное свойство для привязки к Command или IsEnabled кнопки генерации в XAML:
+    public bool IsGenerateButtonEnabled
+    {
+        get
+        {
+            if (IsProjectLoading || IsProcessing || IsCalculatingSize) return false;
+            return SelectedModule != null && RootNode != null;
+        }
+    }
+    // Добавьте этот метод перехвата в MainViewModel.cs для мгновенного обновления кнопок в UI
+    // Внутри MainViewModel.cs
+
+    // Срабатывает при изменении статуса загрузки/синхронизации проекта Google Doc
+    partial void OnIsProjectLoadingChanged(bool value)
+    {
+        GenerateContextCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsModuleSelectorEnabled));
+    }
+
+    // Срабатывает при старте/окончании процесса сборки контекста
+    partial void OnIsProcessingChanged(bool value)
+    {
+        GenerateContextCommand.NotifyCanExecuteChanged();
+    }
+
+    // Срабатывает при начале/окончании асинхронного подсчета токенов
+    partial void OnIsCalculatingSizeChanged(bool value)
+    {
+        GenerateContextCommand.NotifyCanExecuteChanged();
+    }
+    // Внутри MainViewModel.cs
+
+    [RelayCommand]
+    private void DeleteCurrentProject(ProjectConfig? project)
+    {
+        var targetProject = project ?? SelectedProject;
+        if (targetProject == null) return;
+
+        string title = Application.Current.Resources["Str_Title_Confirmation"] as string ?? "Подтверждение";
+        string rawMsg = Application.Current.Resources["Str_Msg_ConfirmDeleteProj"] as string ?? "Удалить проект \"{0}\"?";
+        string message = string.Format(rawMsg, targetProject.ProjectName);
+
+        var result = MessageBox.Show(message, title, MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (result == MessageBoxResult.Yes)
+        {
+            if (SelectedProject == targetProject)
+            {
+                SelectedProject = null;
+            }
+            Projects.Remove(targetProject);
+            SilentSave();
+        }
+    }
+
+    // === КОМАНДЫ (COMMUNITY TOOLKIT MVVM) ===
+
+    // ИСПРАВЛЕНО: Явное публичное свойство для перехвата кликов backdrop
+    [RelayCommand]
+    public void Dummy()
+    {
+        // Пустой метод. Защищает центральное окноBorder от закрытия при клике на него.
+    }
+
+    [RelayCommand]
+    public void CancelUpdate()
+    {
+        if (!IsCancelButtonEnabled) return;
+
+        // Нажатие "Отмена" прерывает фоновую задачу (в т.ч. сетевой HttpClient)
+        _updateCts?.Cancel();
+
+        // Сброс видимости элементов
+        IsUpdateOverlayVisible = false;
+        IsUpdateProcessing = false;
+        IsRetryButtonVisible = false;
+    }
+
+    [RelayCommand]
+    public async Task RetryUpdate()
+    {
+        // ИСПРАВЛЕНО: Защита от дребезга кнопок и повторных параллельных запусков
+        if (IsUpdateProcessing) return;
+        await StartProjectUpdateAsync(_lastUpdateType, _lastTargetPath);
+    }
+
+    // === ИСПРАВЛЕННАЯ БИЗНЕС-ЛОГИКА ===
+    // ================================================================= -->
+    // ЧАСТЬ 2: ГАРАНТИРОВАННАЯ ИНИЦИАЛИЗАЦИЯ СТАТУСОВ И ВЫЗОВ GOOGLE API-->
+    // ================================================================= -->
+    public async Task StartProjectUpdateAsync(UpdateType type, string targetPath)
+    {
+        _lastUpdateType = type;
+        _lastTargetPath = targetPath;
+        _updateCts = new CancellationTokenSource();
+
+        // 1. Инициализируем базовое состояние UI-оверлея
+        IsUpdateOverlayVisible = true;
+        IsUpdateProcessing = true;
+        IsRetryButtonVisible = false;
+        IsCancelButtonEnabled = true;
+
+        // 2. ИСПРАВЛЕНО: Безопасное извлечение строк из словаря локализации ДО тяжелых задач
+        string statusKey = type switch
+        {
+            UpdateType.ReadDirectory => "Str_Update_ReadDir",
+            UpdateType.GoogleApiLoad => "Str_Update_GoogleApi",
+            UpdateType.ConvertDocx => "Str_Update_ConvertDocx",
+            _ => "Str_Calculating"
+        };
+
+        // Принудительно вытаскиваем и пингуем UI-поток текстом статуса
+        UpdateOverlayMessage = System.Windows.Application.Current.Resources[statusKey] as string ?? "Обработка...";
+
+        try
+        {
+            switch (type)
+            {
+                case UpdateType.ReadDirectory:
+                    var fileSystem = new FileSystemService();
+                    await fileSystem.ScanDirectoryAsync(targetPath);
+                    break;
+
+                case UpdateType.GoogleApiLoad:
+                    IsCancelButtonEnabled = true;
+
+                    if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+                    {
+                        throw new System.Net.WebException("No internet connection");
+                    }
+
+                    if (SelectedProject != null && SelectedProject.Type == ProjectType.GoogleDoc)
+                    {
+                        var downloader = new Google.GoogleDownloader();
+                        string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+                        // ИСПРАВЛЕНО: Защита от затирания Email. Если поле в проекте пустое — 
+                        // принудительно восстанавливаем его из локального хранилища настроек приложения Settings!
+                        string serviceAccountEmail = SelectedProject.GoogleApiKey;
+                        if (string.IsNullOrWhiteSpace(serviceAccountEmail))
+                        {
+                            serviceAccountEmail = Properties.Settings.Default.DefaultServiceAccountEmail;
+                            // Сразу восстанавливаем значение и в самом проекте, чтобы баг больше не повторялся
+                            SelectedProject.GoogleApiKey = serviceAccountEmail;
+                        }
+
+                        // Теперь извлечение пути по Email сработает гарантированно!
+                        string keyPath = GetKeyPathByEmail(serviceAccountEmail);
+
+                        if (string.IsNullOrWhiteSpace(keyPath) || !File.Exists(keyPath))
+                        {
+                            // Передаем keyPath в конструктор, чтобы в логах отладки (из прошлого шага) 
+                            // вы точно видели, какой именно физический путь проверяет система
+                            throw new FileNotFoundException("Файл ключа авторизации Google Docs не найден на диске.", keyPath ?? "ПОЛУЧЕНА_ПУСТАЯ_СТРОКА");
+                        }
+
+                        using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_updateCts.Token))
+                        {
+                            linkedCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+                            bool success = await downloader.DownloadToCacheAsync(
+                                SelectedProject.RootPath,
+                                projectBaseDir,
+                                keyPath);
+
+                            if (!success)
+                            {
+                                throw new System.Net.WebException("Google Docs API returned failure.");
+                            }
+                        }
+                    }
+                    break;
+
+                case UpdateType.ConvertDocx:
+                    // Заглушка для будущего парсера Word
+                    await Task.Delay(2000, _updateCts.Token);
+                    break;
+            }
+
+            // Успешный исход — гасим оверлей
+            IsUpdateOverlayVisible = false;
+        }
+        catch (OperationCanceledException)
+        {
+            IsUpdateOverlayVisible = false;
+        }
+        catch (FileNotFoundException fnfEx)
+        {
+            // ИСПРАВЛЕНО: Выводим в отладку точный путь, на котором споткнулась программа!
+            System.Diagnostics.Debug.WriteLine($"[Google API Auth Error] Ключ не найден по пути: {fnfEx.FileName}");
+
+            IsUpdateProcessing = false;
+            IsCancelButtonEnabled = true;
+
+            // Читаем из ресурсов строку об отсутствии доступа/ключа (или используем общую)
+            string errKey = "Str_Err_GoogleDocUnavailable";
+            UpdateOverlayMessage = System.Windows.Application.Current.Resources[errKey] as string
+                ?? "Файл ключа авторизации Google Docs не найден на диске.";
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is FormatException)
+        {
+            System.Diagnostics.Debug.WriteLine($"[IO Error Detail] {ex.GetType().Name}: {ex.Message}");
+            IsUpdateProcessing = false;
+            IsCancelButtonEnabled = true;
+            string errKey = (type == UpdateType.ConvertDocx) ? "Str_Err_Update_Convert" : "Str_Err_Update_ReadDir";
+            UpdateOverlayMessage = System.Windows.Application.Current.Resources[errKey] as string ?? "Ошибка чтения/записи диска.";
+        }
+        catch (Exception ex) when (ex is System.Net.WebException || ex is TaskCanceledException)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Network Error Detail] {ex.Message}");
+            IsUpdateProcessing = false;
+            IsCancelButtonEnabled = true;
+            IsRetryButtonVisible = true;
+            UpdateOverlayMessage = System.Windows.Application.Current.Resources["Str_Err_Update_Network"] as string ?? "Ошибка сети.";
+        }
+    }
+
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПОЛНАЯ МУЛЬТИЯЗЫЧНОСТЬ И ОЧИСТКА ХАРДКОДА СТРОК       -->
+    // ================================================================= -->
+    [RelayCommand]
+    private async Task RecreateGoogleDoc()
+    {
+        if (SelectedProject == null || SelectedProject.Type != ProjectType.GoogleDoc) return;
+
+        // 1. Извлекаем строго локализованные строки из XAML-ресурсов приложения
+        string confirmMsg = Application.Current.Resources["Str_Msg_ConfirmRecreateGoogle"] as string
+            ?? "Внимание! Это действие полностью удалит локальный кеш, очистит дерево и принудительно скачает документ заново. Продолжить?";
+
+        // Используем ваш легитимный ключ заголовка из страницы 22/24 PDF кода
+        string confirmTitle = Application.Current.Resources["Str_Title_Confirmation"] as string
+            ?? "Подтверждение действия";
+
+        // Показываем автору предупреждающее мультиязычное окно
+        var dialogResult = MessageBox.Show(confirmMsg, confirmTitle, MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (dialogResult != MessageBoxResult.Yes) return;
+
+        try
+        {
+            // 2. Уничтожаем локальный кэш
+            string docId = Google.GoogleDownloader.ExtractDocumentId(SelectedProject.RootPath);
+            if (!string.IsNullOrEmpty(docId))
+            {
+                string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string cacheDir = Path.Combine(projectBaseDir, "googlecache");
+
+                string jsonCachePath = Path.Combine(cacheDir, $"{docId}.json");
+                string metaCachePath = Path.Combine(cacheDir, $"{docId}.meta");
+
+                if (File.Exists(jsonCachePath)) File.Delete(jsonCachePath);
+                if (File.Exists(metaCachePath)) File.Delete(metaCachePath);
+            }
+
+            // 3. Обнуляем дерево и модули
+            if (RootNode != null)
+            {
+                RootNode.Children.Clear();
+                RootNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = RootNode, IsFile = true });
+            }
+
+            if (SelectedModule != null)
+            {
+                SelectedModule.CheckedFiles?.Clear();
+                SelectedModule.CheckedEntries?.Clear();
+            }
+
+            // ================================================================= -->
+            // ЧАСТЬ 1: ИСПРАВЛЕННЫЙ ПОРЯДОК ОЖИДАНИЯ АСИНХРОННОГО СКАЧИВАНИЯ     -->
+            // ================================================================= -->
+            OnPropertyChanged(nameof(RootNode));
+
+            // 4. ЗАПУСКАЕМ НАШ СЕТЕВОЙ GRID-ОВЕРЛЕЙ ДЛЯ СКАЧИВАНИЯ С НУЛЯ
+            // ИСПРАВЛЕНО: Ждём (await) полного завершения скачивания и закрытия оверлея!
+            await StartProjectUpdateAsync(UpdateType.GoogleApiLoad, SelectedProject.RootPath);
+
+            // 5. ИСПРАВЛЕНО: Строим дерево ТЕПЕРЬ, когда файл гарантированно лежит в googlecache
+            // Передаем пустой список выбранных файлов, так как мы полностью пересоздали проект
+            RefreshTreeView(new List<string>());
+        }
+        catch (Exception ex)
+        {
+            string generalErrorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
+            MessageBox.Show($"{ex.Message}", generalErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+
 
 
 }

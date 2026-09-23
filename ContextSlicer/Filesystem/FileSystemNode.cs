@@ -2,15 +2,29 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace ContextSlicer;
+namespace ContextSlicer.Filesystem;
 public class FileSystemNode : INotifyPropertyChanged
 {
     private bool? _isChecked = false;
+    private bool _isExpanded = false;
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set
+        {
+            if (_isExpanded != value)
+            {
+                _isExpanded = value;
+                OnPropertyChanged(nameof(IsExpanded));
+            }
+        }
+    }
 
     public string Name { get; set; } = string.Empty;
     public string RelativePath { get; set; } = string.Empty;
     public string FullPath { get; set; } = string.Empty;
     public bool IsFile { get; set; }
+    public bool IsDirectory { get; set; }
     public FileSystemNode? Parent { get; set; }
     public ObservableCollection<FileSystemNode> Children { get; set; } = new();
 
@@ -52,19 +66,30 @@ public class FileSystemNode : INotifyPropertyChanged
         set => SetChecked(value, true, true);
     }
     // Добавьте это в FileSystemNode.cs для прямой передачи текста префикса в UI
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: УДАЛЕНИЕ ТЕХНИЧЕСКИХ ПРЕФИКСОВ ДЛЯ ХУДОЖЕСТВЕННОЙ ПРОЗЫ-->
+    // ================================================================= -->
     public string TypePrefixText
     {
         get
         {
             if (!IsSyntaxNode) return string.Empty;
-            // Запрашиваем строку из глобальных ресурсов приложения (с учетом языка)
+
+            // Если это глава рассказа или вкладка — префикс НЕ нужен, выводим чистый текст!
+            if (SyntaxType == EntryType.Heading || SyntaxType == EntryType.Tab)
+            {
+                return string.Empty;
+            }
+
+            // Ваша существующая логика для исходного кода и SQL (оставляем без изменений)
             if (System.Windows.Application.Current.Resources.Contains(TypeLocalKey))
             {
                 return System.Windows.Application.Current.Resources[TypeLocalKey] as string ?? string.Empty;
             }
-            return $"[{SyntaxType.ToString().ToUpper()}]"; // Фолбэк на английский апперкейс, если ресурс не успел прогрузиться
+            return $"[{SyntaxType.ToString().ToUpper()}]";
         }
     }
+
 
     public void SetChecked(bool? value, bool updateChildren, bool updateParent)
     {
@@ -118,7 +143,7 @@ public class FileSystemNode : INotifyPropertyChanged
         if (hasLoadingStub)
         {
             // Если хоть что-то выбрано — это строго квадратик Indeterminate (null). Если всё пусто — False.
-            newState = (hasChecked || hasIndeterminate) ? (bool?)null : false;
+            newState = hasChecked || hasIndeterminate ? null : false;
         }
         else
         {

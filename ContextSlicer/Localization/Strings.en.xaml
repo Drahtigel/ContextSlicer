@@ -75,4 +75,50 @@
     <!-- Shortened prefixes for literary text -->
     <system:String x:Key="Str_Type_Tab">[TAB]</system:String>
     <system:String x:Key="Str_Type_Heading">[CH]</system:String>
+
+    <system:String x:Key="Str_SourceDataLabel">Data Source:</system:String>
+    <!-- Network cloud interaction errors -->
+    <system:String x:Key="Str_Err_GoogleDocUnavailable">Google Document is unavailable! Please check the link access, API key validity, and your network connection.</system:String>
+    <system:String x:Key="Str_Err_NetworkTitle">Network Error</system:String>
+    <!-- Google Service Accounts Manager Localization -->
+    <system:String x:Key="Str_Err_InvalidServiceAccount">The selected file is not a valid Google Service Account key!</system:String>
+    <system:String x:Key="Str_Err_ValidationTitle">Validation Error</system:String>
+    <system:String x:Key="Str_Err_ImportFailed">Failed to read or import the key:</system:String>
+    <system:String x:Key="Str_Err_ImportTitle">Import Error</system:String>
+    <system:String x:Key="Str_Msg_EmailCopied">The service account email has been successfully copied to the clipboard:&#x0a;&#x0a;{0}&#x0a;&#x0a;Paste it into the access settings of your Google Document!</system:String>
+    <system:String x:Key="Str_Msg_EmailCopiedTitle">Success</system:String>
+    <system:String x:Key="Str_Err_ExtractEmailFailed">Failed to extract Email:</system:String>
+    <system:String x:Key="Str_Err_GeneralErrorTitle">Error</system:String>
+    <!-- System key dialog parameters -->
+    <system:String x:Key="Str_Dialog_JsonFilter">Google API Key (*.json)|*.json|All Files (*.*)|*.*</system:String>
+    <system:String x:Key="Str_Dialog_JsonTitle">Select the downloaded service account JSON key file</system:String>
+    <system:String x:Key="Str_TextLabel">Text</system:String>
+    <!-- Project update overlay statuses -->
+    <system:String x:Key="Str_Update_ReadDir">Analyzing directory structure...</system:String>
+    <system:String x:Key="Str_Update_GoogleApi">Synchronizing with Google Drive...</system:String>
+    <system:String x:Key="Str_Update_ConvertDocx">Converting documents...</system:String>
+
+    <!-- Error messages -->
+    <system:String x:Key="Str_Err_Update_ReadDir">File access error. Make sure the storage media or local drive is connected.</system:String>
+    <system:String x:Key="Str_Err_Update_Network">Network failure. Please check your internet connection.</system:String>
+    <system:String x:Key="Str_Err_Update_Convert">Failed to convert file. The archive might be corrupted.</system:String>
+    <system:String x:Key="Str_Update_BtnRetry">Retry</system:String>
+    <system:String x:Key="Str_Update_BtnCancel">Cancel</system:String>
+    <system:String x:Key="Str_Update_Title">Project Update</system:String>
+    <!-- NEW STRINGS FOR ELIMINATING HARDCODE -->
+    <system:String x:Key="Str_Update_LoadingGoogleDoc">Loading Google Document structure...</system:String>
+    <system:String x:Key="Str_Update_BuildingTree">Building syntax tree...</system:String>
+    <system:String x:Key="Str_Err_GoogleAuthFailed">Google authentication failed: Check the service account key file.</system:String>
+    <system:String x:Key="Str_Err_GoogleParseError">Failed to parse Google Document structure. Invalid JSON.</system:String>
+    <system:String x:Key="Str_Status_ProjectSaved">Project settings saved successfully.</system:String>
+    <!-- Project Context Menu Items -->
+    <system:String x:Key="Str_Mnu_UpdateProject">Update Structure</system:String>
+    <system:String x:Key="Str_Mnu_DeleteProject">Delete Project</system:String>
+    <system:String x:Key="Str_Mnu_RecreateGoogleDoc">Clear and Recreate Project</system:String>
+
+    <!-- Confirmation messages -->
+    <system:String x:Key="Str_Msg_ConfirmDeleteProj">Are you sure you want to completely delete project "{0}" and all its modules?</system:String>
+    <system:String x:Key="Str_Msg_ConfirmRecreateGoogle">Warning! This action will completely delete the local cache, clear the tree, and force re-download the document. Continue?</system:String>
+    <system:String x:Key="Str_Title_Confirmation">Confirmation Required</system:String>
+
 </ResourceDictionary>

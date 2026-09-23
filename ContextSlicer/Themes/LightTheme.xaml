@@ -15,7 +15,7 @@
     <!-- Адаптивные контрастные цвета для контуров кнопок (Светлая тема) -->
     <SolidColorBrush x:Key="ButtonEditBrush" Color="#005A9E"/>
     <SolidColorBrush x:Key="ButtonSyncBrush" Color="#2E7D32"/>
-    <SolidColorBrush x:Key="ButtonDeleteBrush" Color="#C62828"/>
+    <SolidColorBrush x:Key="ButtonDeleteBrush" Color="#E53935"/>
 
 
     <!-- Неявные стили для сброса на стандартные цвета -->

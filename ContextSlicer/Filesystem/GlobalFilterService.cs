@@ -4,7 +4,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
 
-namespace ContextSlicer;
+namespace ContextSlicer.Filesystem;
 
 public class GlobalFilters
 {
@@ -66,7 +66,7 @@ public static class GlobalFilterService
     // Теперь проверки папок и расширений работают на основе глобальных ObservableCollection динамически
     public static bool IsFolderExcluded(string folderName)
     {
-        foreach (var f in GlobalFilterService.Current.ExcludedFolders)
+        foreach (var f in Current.ExcludedFolders)
         {
             if (folderName.Equals(f, StringComparison.OrdinalIgnoreCase)) return true;
         }
@@ -76,7 +76,7 @@ public static class GlobalFilterService
     public static bool IsExtensionExcluded(string filePath)
     {
         string ext = Path.GetExtension(filePath);
-        foreach (var e in GlobalFilterService.Current.ExcludedExtensions)
+        foreach (var e in Current.ExcludedExtensions)
         {
             if (ext.Equals(e, StringComparison.OrdinalIgnoreCase)) return true;
         }

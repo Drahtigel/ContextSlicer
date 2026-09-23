@@ -1,4 +1,5 @@
-﻿using System;
+﻿using ContextSlicer.Filesystem;
+using System;
 using System.Collections.Generic;
 
 namespace ContextSlicer
@@ -27,6 +28,8 @@ namespace ContextSlicer
         public string OutputPath { get; set; } = string.Empty;
         public string PromptRules { get; set; } = string.Empty;
         public bool IncludeDirectoryStructure { get; set; } = true;
+        public string GoogleApiKey { get; set; } = string.Empty;
+
 
         // ОБНОВЛЕНО: Вместо bool IsUrl теперь используем перечисление типов
         public ProjectType Type { get; set; } = ProjectType.Folder;
