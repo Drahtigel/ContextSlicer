@@ -376,6 +376,7 @@ public partial class MainViewModel : ObservableObject
         LoadAvailableServiceAccounts();
 
         LoadProjects();
+        IsPdfFormat = true;
     }
 
 
@@ -1327,7 +1328,19 @@ public partial class MainViewModel : ObservableObject
             string fullPath = Path.Combine(OutputPath, safeFileName);
             if (IsPdfFormat)
             {
-                await ContextBuilderService.GeneratePdfContextFileAsync(OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token);
+                // Внутри метода GenerateContext() в MainViewModel.cs:
+                await ContextBuilderService.GeneratePdfContextFileAsync(
+                    OutputPath,
+                    safeFileName,
+                    PromptRules,
+                    ModuleRules,
+                    IncludeDirectoryStructure,
+                    RootNode,
+                    SelectedModule.CheckedEntries,
+                    progressHandler,
+                    SelectedProject?.Type ?? ProjectType.Folder, // <-- ДОБАВЛЯЕМ ТОЛЬКО ЭТОТ ПАРАМЕТР ИЗ CONFIG!
+                    _cts.Token);
+
             }
             else
             {

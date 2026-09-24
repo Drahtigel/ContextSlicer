@@ -59,6 +59,49 @@ public class SyntaxEntry
             return parts.Length > 1 && int.TryParse(parts[1], out int res) ? res : 0;
         }
     }
+
+    public override string ToString()
+    {
+        string rez = string.Empty;
+        switch (this.Type)
+        {
+            case EntryType.Namespace:
+                rez = "NS";
+                break;
+            case EntryType.Section:
+                rez = "SE";
+                break;
+            case EntryType.Struct:
+                rez = "ST";
+                break;
+            case EntryType.Function:
+                rez = "FU";
+                break;
+            case EntryType.Tab:
+                rez = "TAB";
+                break;
+            case EntryType.Heading:
+                rez = "HEAD";
+                break;
+            case EntryType.Class:
+                rez = "CL";
+                break;
+            case EntryType.Enum:
+                rez = "EN";
+                break;
+            case EntryType.Property:
+                rez = "PR";
+                break;
+            case EntryType.Interface:
+                rez = "IF";
+                break;
+            default:
+                rez = "N/A";
+                break;
+        }
+        rez = "[" + rez + "] " + this.DisplayName;
+        return rez ;
+    }
 }
 
 // Общий интерфейс для всех языковых парсеров

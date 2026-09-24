@@ -614,8 +614,16 @@
 
                 <!-- Переключатели формата итогового файла -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
-                    <RadioButton Content="TXT" IsChecked="{Binding IsTxtFormat}" Foreground="{DynamicResource TextBrush}" Margin="0,0,12,0"/>
-                    <RadioButton Content="PDF" IsChecked="{Binding IsPdfFormat}" Foreground="{DynamicResource TextBrush}"/>
+                    <!-- Для радиокнопки PDF -->
+                    <!-- Для радиокнопки PDF -->
+                    <RadioButton Content="PDF"
+             GroupName="FileFormatGroup"
+             IsChecked="{Binding IsPdfFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                    <!-- Для радиокнопки TXT (убрали биндинг, чтобы не ломать XAML) -->
+                    <RadioButton Content="TXT"
+             GroupName="FileFormatGroup"/>
+
                 </StackPanel>
 
                 <!-- Кнопка вызова фильтров масок-исключений (Переведена на ресурсы) -->
