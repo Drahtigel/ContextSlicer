@@ -51,6 +51,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private long _totalCharacters;
     [ObservableProperty] private long _estimatedTokens;
     [ObservableProperty] private bool _isCalculatingSize;
+    [ObservableProperty]
+    private long _totalTokens; // Генератор MVVM автоматически создаст публичное свойство TotalTokens!
+
     // Внимательно проверьте написание этой переменной:
     [ObservableProperty]
     private ContextModule? _selectedModule;
@@ -246,54 +249,75 @@ public partial class MainViewModel : ObservableObject
 
         IsCalculatingSize = true;
 
-        await Task.Run(() =>
+        await Task.Run(async () =>
         {
-            var checkedFiles = new List<FileSystemNode>();
-            ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
-
             long charCount = 0;
+            long totalTokens = 0;
 
-            // 1. Считаем символы в выбранных файлах исходного кода
-            foreach (var file in checkedFiles)
+            // Базовый вес системных правил и промптов (общий для всех типов проектов)
+            long rulesLength = (PromptRules?.Length ?? 0) + (ModuleRules?.Length ?? 0);
+            long tokensFromRules = rulesLength / 2; // Кириллица в промптах тяжелая
+
+            // СВЕРКА ТИПА ПРОЕКТА: Проверяем, литература ли это
+            bool isLiterary = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
+
+            if (isLiterary)
             {
-                if (file != null && File.Exists(file.FullPath))
-                {
-                    try
-                    {
-                        var fi = new FileInfo(file.FullPath);
-                        charCount += fi.Length;
+                // === МАТЕМАТИЧЕСКИ ТОЧНЫЙ СЧЕТ ДЛЯ ЛИТЕРАТУРЫ ===
+                // Запрашиваем у нашего билдера сборку ВСЕГО текста в памяти (включая оглавление с палочками)
+                string bookRootPath = RootNode.FullPath ?? string.Empty;
+                string fullLiteraryText = await GoogleDocBuilder.BuildContextTextAsync(SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(), bookRootPath, IncludeDirectoryStructure, _cts?.Token ?? CancellationToken.None);
+                // Считаем общую длину контента символ в символ (плюс длина правил)
+                charCount = fullLiteraryText.Length + rulesLength;
 
-                        // НОВОЕ: Если структура каталогов включена, добавляем вес строк разметки структуры папок
-                        if (IncludeDirectoryStructure)
+                // Поскольку книга — это чистая кириллица, делим её объем на 2 (безопасная оценка токенов)
+                long tokensFromBook = fullLiteraryText.Length / 2;
+
+                totalTokens = tokensFromBook + tokensFromRules;
+            }
+            else
+            {
+                // === ИСХОДНЫЙ КОД C# И SQL (Оригинальная точная логика) ===
+                var checkedFiles = new List<FileSystemNode>();
+                ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
+
+                foreach (var file in checkedFiles)
+                {
+                    if (file != null && File.Exists(file.FullPath))
+                    {
+                        try
                         {
-                            // Примерно 15 символов на строку вида " [Файл] Relative\Path\File.cs\n"
-                            charCount += (file.RelativePath?.Length ?? 0) + 10;
+                            var fi = new FileInfo(file.FullPath);
+                            charCount += fi.Length;
+
+                            if (IncludeDirectoryStructure)
+                            {
+                                charCount += (file.RelativePath?.Length ?? 0) + 10;
+                            }
                         }
+                        catch { }
                     }
-                    catch { }
                 }
+
+                // Плюсуем правила
+                charCount += rulesLength;
+
+                long codeLength = charCount - rulesLength;
+                if (codeLength < 0) codeLength = 0;
+
+                long tokensFromCode = codeLength / 4; // Английский код легкий
+
+                totalTokens = tokensFromCode + tokensFromRules;
             }
 
-            // 2. Добавляем символы из полей правил и служебную разметку тегов
-            charCount += (PromptRules?.Length ?? 0);
-            charCount += (ModuleRules?.Length ?? 0);
-            charCount += 150; // Запас на служебные теги
-
-            // 3. Считаем токены. Код (английский) ~ 4 символа на токен. 
-            // Русский текст в правилах ~ 2 символа на токен. Делаем взвешенную безопасную оценку:
-            long rulesLength = (PromptRules?.Length ?? 0) + (ModuleRules?.Length ?? 0);
-            long codeLength = charCount - rulesLength;
-            if (codeLength < 0) codeLength = 0;
-
-            long tokensFromCode = codeLength / 4;
-            long tokensFromRules = rulesLength / 2; // Более тяжелые токены для кириллицы
-
+            // Записываем идеальные рантайм-показания на нижнюю панель WPF
             TotalCharacters = charCount;
-            EstimatedTokens = tokensFromCode + tokensFromRules;
+            TotalTokens = totalTokens;
         });
 
         IsCalculatingSize = false;
     }
+
     partial void OnPromptRulesChanged(string value) => _ = RecalculateContextSizeAsync();
     partial void OnModuleRulesChanged(string value) => _ = RecalculateContextSizeAsync();
     // Автоматический пересчет токенов при клике на чекбокс структуры каталогов
