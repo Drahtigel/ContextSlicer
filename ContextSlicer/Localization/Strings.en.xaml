@@ -120,5 +120,11 @@
     <system:String x:Key="Str_Msg_ConfirmDeleteProj">Are you sure you want to completely delete project "{0}" and all its modules?</system:String>
     <system:String x:Key="Str_Msg_ConfirmRecreateGoogle">Warning! This action will completely delete the local cache, clear the tree, and force re-download the document. Continue?</system:String>
     <system:String x:Key="Str_Title_Confirmation">Confirmation Required</system:String>
+    <!-- ======================================================= -->
+    <!-- LOCALIZATION: CONTENT BUILDER ERRORS & WARNINGS          -->
+    <!-- ======================================================= -->
+    <system:String x:Key="Str_Title_Warning">Warning</system:String>
+    <system:String x:Key="Str_Err_FileLocked">Failed to overwrite the file. Please close the PDF document in other applications and try again.</system:String>
+    <system:String x:Key="Str_Err_PdfSaveFailed">Failed to save the PDF document:</system:String>
 
 </ResourceDictionary>

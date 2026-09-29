@@ -120,5 +120,12 @@
     <system:String x:Key="Str_Msg_ConfirmDeleteProj">Вы уверены, что хотите полностью удалить проект "{0}" и все его модули?</system:String>
     <system:String x:Key="Str_Msg_ConfirmRecreateGoogle">Внимание! Это действие полностью удалит локальный кеш, очистит дерево и принудительно скачает документ заново. Продолжить?</system:String>
     <system:String x:Key="Str_Title_Confirmation">Подтверждение действия</system:String>
+    <!-- ======================================================= -->
+    <!-- ЛОКАЛИЗАЦИЯ: ОШИБКИ И ПРЕДУПРЕЖДЕНИЯ СБОРЩИКА КОНТЕНТА   -->
+    <!-- ======================================================= -->
+ 
+    <system:String x:Key="Str_Title_Warning">Внимание</system:String>
+    <system:String x:Key="Str_Err_FileLocked">Не удалось перезаписать файл. Пожалуйста, закройте PDF-документ в сторонних программах и повторите попытку.</system:String>
+    <system:String x:Key="Str_Err_PdfSaveFailed">Не удалось сохранить PDF документ:</system:String>
 
 </ResourceDictionary>

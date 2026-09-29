@@ -176,29 +176,18 @@ namespace ContextSlicer.Filesystem
         /// Построчно обходит контент, автоматически укладывая HEADING_2 внутрь HEADING_1 по уровням иерархии
         /// </summary>
         // ================================================================= -->
-        // ИСПРАВЛЕНО: СТРОГАЯ ИЕРАРХИЯ ВЛОЖЕННОСТИ ЗАГОЛОВКОВ HEADING      -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ЛИНЕЙНЫЙ ПАРСЕР КОНТЕНТА С ИЗОЛЯЦИЕЙ НЕВЫБРАННЫХ ГЛАВ -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ИЕРАРХИЧЕСКИЙ НАСЛЕДУЕМЫЙ ПАРСЕР ПОДЗАГОЛОВКОВ        -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: СТРОГИЙ ИЕРАРХИЧЕСКИЙ ПАРСЕР ЗАГОЛОВКОВ ПО УРОВНЯМ    -->
+        // ИСПРАВЛЕНО: ЖЕЛЕЗНЫЙ ИЕРАРХИЧЕСКИЙ СБОРЩИК КОНТЕНТА С ИЗОЛЯЦИЕЙ    -->
         // ================================================================= -->
         private static void ParseParagraphsToTree(JArray contentArray, DocEntry parentTab, List<SyntaxEntry> savedEntries, string tabPath)
         {
-            // Словарь activeNodes хранит текущие активные узлы для каждого уровня.
-            // Уровень 0 — это всегда сама родительская вкладка (абсолютный корень контекста).
-            var activeNodes = new Dictionary<int, DocEntry> { { 0, parentTab } };
+            // Цепочка активных объектов DocEntry для контроля вложенности (0 — корень вкладки)
+            var activeChain = new List<DocEntry> { parentTab };
 
-            // Переменная для отслеживания уровня предыдущего обработанного заголовка.
-            // На старте мы находимся на уровне вкладки (уровень 0).
-            int lastHeadingLevel = 0;
+            // Словарь сквозных иерархических путей (0 — путь вкладки)
+            var activePaths = new Dictionary<int, string> { { 0, tabPath } };
 
-            // Ссылка на узел, в который прямо сейчас сыплется текст прозы.
-            DocEntry currentActiveTarget = parentTab;
+            // Ссылка на текущий активный узел для сбора текста. Если null — текст отбрасывается.
+            DocEntry? currentActiveTarget = parentTab;
 
             foreach (var element in contentArray)
             {
@@ -207,7 +196,7 @@ namespace ContextSlicer.Filesystem
 
                 string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
 
-                // Линейно собираем чистый текст текущего абзаца
+                // Линейно и быстро вытягиваем чистый текст текущего абзаца
                 var textBuilder = new StringBuilder();
                 if (paragraph["elements"] is JArray elements)
                 {
@@ -218,34 +207,42 @@ namespace ContextSlicer.Filesystem
                 }
                 string pText = textBuilder.ToString();
 
-                // ОБНАРУЖЕН СИСТЕМНЫЙ ЗАГОЛОВК (СТЕНА ИЛИ ПОДРАЗДЕЛ)
+                // ОБНАРУЖЕН ЗАГОЛОВОК (ЖЕСТКАЯ СТЕНА РАЗДЕЛЕНИЯ КОНТЕНТА)
                 if (namedStyle.StartsWith("HEADING_") && int.TryParse(namedStyle.Substring(8), out int level))
                 {
                     string headingTitle = pText.Trim();
                     if (string.IsNullOrEmpty(headingTitle)) continue;
 
-                    string fullHeadingPath = $"{tabPath}/{headingTitle}";
+                    // ПРАВИЛО 1: Любой встреченный заголовок закрывает все текущие вложенные подразделы!
+                    // Откатываем стек назад, пока не найдем узел, чей уровень строго выше нового заголовка
+                    while (activeChain.Count > 1 && activeChain[activeChain.Count - 1].HeadingLevel >= level)
+                    {
+                        activeChain.RemoveAt(activeChain.Count - 1);
+                    }
 
-                    // Проверяем по чек-листу интерфейса, выбран ли этот заголовок пользователем
+                    // На вершине стека гарантированно находится правильный родитель текущего уровня
+                    DocEntry correctParent = activeChain[activeChain.Count - 1];
+
+                    // Вычисляем путь родительского узла из словаря иерархии путей
+                    int targetParentLevel = level - 1;
+                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel))
+                    {
+                        targetParentLevel--;
+                    }
+                    string parentPath = activePaths[targetParentLevel];
+
+                    // Формируем строгий сквозной путь, идентичный парсеру
+                    string fullHeadingPath = string.IsNullOrEmpty(parentPath) ? headingTitle : $"{parentPath}/{headingTitle}";
+
+                    // Сверяемся с чек-листом выбранных на UI элементов
                     var match = savedEntries.FirstOrDefault(e =>
                         (e.Type == EntryType.Heading || e.Type == EntryType.Section) &&
                         e.EntryPath.Equals(fullHeadingPath, StringComparison.OrdinalIgnoreCase));
 
-                    // ВЫЧИСЛЕНИЕ РОДИТЕЛЯ ПО ПРАВИЛУ ДОМИНАНТНЫХ УРОВНЕЙ:
-                    // Новый заголовок ищет себе предка строго на один уровень выше своего собственного (level - 1 и ниже)
-                    int targetParentLevel = level - 1;
-                    while (targetParentLevel > 0 && !activeNodes.ContainsKey(targetParentLevel))
-                    {
-                        targetParentLevel--;
-                    }
-
-                    DocEntry parentNode = activeNodes[targetParentLevel];
-
                     if (match != null)
                     {
-                        // СЦЕНАРИЙ А: Раздел чекнут пользователем на UI. Создаем полноценный узел дерева.
+                        // СЦЕНАРИЙ А: Раздел выбран пользователем. Создаем честный узел книги.
                         DocEntryType localType = match.Type == EntryType.Tab ? DocEntryType.Tab : DocEntryType.Heading;
-
                         var headingEntry = new DocEntry
                         {
                             EntryTitle = headingTitle,
@@ -254,57 +251,39 @@ namespace ContextSlicer.Filesystem
                             HeadingLevel = level
                         };
 
-                        // Добавляем узел в ChildEntries вычисленного правильного родителя!
-                        parentNode.ChildEntries.Add(headingEntry);
+                        // Удаляем из чек-листа и добавляем в ChildEntries правильного родителя
+                        savedEntries.Remove(match);
+                        correctParent.ChildEntries.Add(headingEntry);
 
-                        // Фиксируем этот узел как активный маркер для текущего уровня
-                        activeNodes[level] = headingEntry;
+                        // Фиксируем новую главу в цепочке и включаем запись прозы в неё
+                        activeChain.Add(headingEntry);
                         currentActiveTarget = headingEntry;
-                        lastHeadingLevel = level;
 
-                        // Схлопываем и очищаем из памяти все более глубокие уровни (детей старых веток)
-                        var keysToRemove = activeNodes.Keys.Where(k => k > level).ToList();
-                        foreach (var key in keysToRemove) activeNodes.Remove(key);
+                        // Сохраняем путь для иерархии вложенных подзаголовков
+                        activePaths[level] = fullHeadingPath;
+                        var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
+                        foreach (var key in keysToRemove) activePaths.Remove(key);
                     }
                     else
                     {
-                        // СЦЕНАРИЙ Б: Подраздел НЕ выбран на UI (например, вложенный заголовок нижнего уровня)
-                        // Если его числовое значение больше, чем уровень текущей активной главы — 
-                        // значит, это её внутренний подпункт. Его текст нельзя зажёвывать!
-                        if (level > lastHeadingLevel)
-                        {
-                            // Впечатываем заголовок как красивую текстовую строчку в контент текущей главы
-                            currentActiveTarget.EntryContent += Environment.NewLine + Environment.NewLine + headingTitle + Environment.NewLine;
-                        }
-                        else
-                        {
-                            // Значение меньше или равно — перед нами совершенно новая крупная невыбранная глава.
-                            // Создаем изолированную виртуальную заглушку-пустышку.
-                            var dummyVirtualEntry = new DocEntry
-                            {
-                                EntryTitle = headingTitle,
-                                Type = DocEntryType.Heading,
-                                HeadingLevel = level
-                            };
+                        // СЦЕНАРИЙ Б: Раздел НЕ выбран на UI (Глава 5, невыбранный подпункт и т.д.)
+                        // ПРАВИЛО 2: Мы наглухо выключаем приемник текста! Весь контент летит в пустоту.
+                        currentActiveTarget = null;
 
-                            activeNodes[level] = dummyVirtualEntry;
-                            currentActiveTarget = dummyVirtualEntry;
-                            lastHeadingLevel = level;
-
-                            var keysToRemove = activeNodes.Keys.Where(k => k > level).ToList();
-                            foreach (var key in keysToRemove) activeNodes.Remove(key);
-                        }
+                        // Создаем виртуальный маркер уровня для стека путей, чтобы вложенные в него подпункты 
+                        // (если они вдруг чекнуты) могли правильно вычислить свой иерархический путь
+                        activePaths[level] = fullHeadingPath;
+                        var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
+                        foreach (var key in keysToRemove) activePaths.Remove(key);
                     }
                 }
-                else if (!string.IsNullOrWhiteSpace(pText))
+                else if (currentActiveTarget != null && !string.IsNullOrWhiteSpace(pText))
                 {
-                    // Накапливаем обычный художественный текст прозы в текущую активную ноду
+                    // Обычный текст прозы накапливается ТОЛЬКО если приемник включен (не null)
                     currentActiveTarget.EntryContent += pText;
                 }
             }
         }
-
-
 
 
     }

@@ -106,6 +106,10 @@ public class GoogleDocSyntaxParser : ISyntaxParser
         var contentArray = documentTab["body"]?["content"] as JArray;
         if (contentArray == null) return entries;
 
+        // ИЕРАРХИЧЕСКИЙ СТЭК ПУТЕЙ: Индекс списка отражает уровень HEADING_ (0 — это путь самой вкладки)
+        var activePaths = new Dictionary<int, string> { { 0, tabPath } };
+        int lastLevel = 0;
+
         foreach (var element in contentArray)
         {
             var paragraph = element["paragraph"];
@@ -113,6 +117,7 @@ public class GoogleDocSyntaxParser : ISyntaxParser
             {
                 string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
                 int elementLength = 0;
+
                 if (paragraph["elements"] is JArray elements)
                 {
                     foreach (var el in elements)
@@ -120,7 +125,7 @@ public class GoogleDocSyntaxParser : ISyntaxParser
                         elementLength += (el["textRun"]?["content"]?.ToString() ?? string.Empty).Length;
                     }
 
-                    if (namedStyle.StartsWith("HEADING_"))
+                    if (namedStyle.StartsWith("HEADING_") && int.TryParse(namedStyle.Substring(8), out int level))
                     {
                         string headingText = "";
                         foreach (var el in elements)
@@ -128,9 +133,21 @@ public class GoogleDocSyntaxParser : ISyntaxParser
                             headingText += el["textRun"]?["content"]?.ToString() ?? string.Empty;
                         }
                         headingText = headingText.Trim();
+
                         if (!string.IsNullOrEmpty(headingText))
                         {
-                            string entryPath = string.IsNullOrEmpty(tabPath) ? headingText : $"{tabPath}/{headingText}";
+                            // НАХОДИМ ПРАВИЛЬНОГО РОДИТЕЛЯ: Шагаем по уровням заголовков вверх (level - 1 и ниже)
+                            int targetParentLevel = level - 1;
+                            while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel))
+                            {
+                                targetParentLevel--;
+                            }
+
+                            string parentPath = activePaths[targetParentLevel];
+
+                            // Строим СТРОГИЙ сквозной каскадный путь для дерева UI
+                            string entryPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
+
                             entries.Add(new SyntaxEntry
                             {
                                 FilePath = relativePath,
@@ -139,6 +156,13 @@ public class GoogleDocSyntaxParser : ISyntaxParser
                                 Type = EntryType.Heading,
                                 SpanInfo = $"{currentAbsoluteIndex},{elementLength}"
                             });
+
+                            // Фиксируем путь текущего уровня и сносим старые глубокие ветки
+                            activePaths[level] = entryPath;
+                            lastLevel = level;
+
+                            var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
+                            foreach (var key in keysToRemove) activePaths.Remove(key);
                         }
                     }
                 }
@@ -151,6 +175,7 @@ public class GoogleDocSyntaxParser : ISyntaxParser
         }
         return entries;
     }
+
 
     private string ExtractRawTextFromTabs(JObject docJson)
     {

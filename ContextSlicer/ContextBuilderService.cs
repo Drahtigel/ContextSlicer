@@ -168,19 +168,22 @@ public static class ContextBuilderService
     /// <summary>
     /// Перегруженный метод текстового билдера, принимающий ProjectType
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АВТОНОМНЫЙ УМНЫЙ ДИСПЕТЧЕР ДЛЯ ТЕКСТОВОЙ ВЫГРУЗКИ TXT -->
+    // ================================================================= -->
     public static async Task<StringBuilder> BuildTextContentAsync(
-       string promptRules,
-       string moduleRules,
-       bool includeDirectoryStructure,
-       List<FileSystemNode> checkedFiles,
-       List<SyntaxEntry> savedEntries,
-       IProgress<ProgressReport> progressHandler,
-       ProjectType projectType,
-       CancellationToken token)
+        string promptRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        IProgress<ProgressReport> progressHandler,
+        ProjectType projectType,
+        CancellationToken token)
     {
         var sb = new StringBuilder();
 
-        // 1. Вывод общих системных промптов и правил
+        // 1. Выгрузка системных правил и промптов проекта
         if (!string.IsNullOrWhiteSpace(promptRules) || !string.IsNullOrWhiteSpace(moduleRules))
         {
             sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===");
@@ -196,27 +199,42 @@ public static class ContextBuilderService
 
         if (savedEntries == null || savedEntries.Count == 0) return sb;
 
-        // 2. БЕЗОПАСНАЯ МАРШРУТИЗАЦИЯ ПО ТИПУ ПРОЕКТА
-        // Внутри метода BuildTextContentAsync в ContextBuilderService.cs:
-        // Внутри метода BuildTextContentAsync в ContextBuilderService.cs:
-        if (projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc)
+        // ИСПРАВЛЕНО: Интеллектуальное автоопределение типа проекта на лету!
+        // Если тип прилетел как Folder, но внутри сохраненных записей лежат литературные типы (Tab/Heading) —
+        // значит, это текстовый вызов генерации TXT для книги. Переопределяем тип принудительно!
+        bool isActuallyLiterary = projectType == ProjectType.GoogleDoc ||
+                                 projectType == ProjectType.WordDoc ||
+                                 savedEntries.Any(e => e.Type == EntryType.Tab);
+
+        // 2. БЕЗОПАСНАЯ МАРШРУТИЗАЦИЯ ПО ИСТИННОМУ ТИПУ
+        if (isActuallyLiterary)
         {
-            // Вытаскиваем RootPath (ссылку на Google Документ) из первого файлаcheckedFiles, 
-            // у которого в текстовых проектах это свойство хранит адрес ссылки!
+            // Вытаскиваем железный физический путь к файлу кэша JSON
             string bookRootPath = checkedFiles.FirstOrDefault()?.FullPath ?? string.Empty;
 
-            // Передаем сохраненные entries и ссылку напрямую в GoogleDocBuilder
-            string literaryContent = await GoogleDocBuilder.BuildContextTextAsync(savedEntries, bookRootPath, includeDirectoryStructure, token);
+            // Если в checkedFiles пусто (при плоском вызове), восстанавливаем путь через сохраненные записи кэша
+            if (string.IsNullOrEmpty(bookRootPath))
+            {
+                string googleCacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache");
+                var firstEntry = savedEntries.FirstOrDefault(e => !string.IsNullOrEmpty(e.FilePath));
+                if (firstEntry != null)
+                {
+                    bookRootPath = Path.Combine(googleCacheDir, Path.GetFileName(firstEntry.FilePath));
+                }
+            }
+
+            // Делегируем сборку нашему чистому объектному классу GoogleDocBuilder!
+            // Передаем безопасный клонированный список CheckedEntries, защищая UI от вычеркивания элементов
+            string literaryContent = await GoogleDocBuilder.BuildContextTextAsync(savedEntries.ToList(), bookRootPath, includeDirectoryStructure, token);
             sb.Append(literaryContent);
         }
-
         else
         {
             // === ИСХОДНЫЙ КОД C# И SQL (Остается в первозданном, безопасном виде!) ===
             if (includeDirectoryStructure)
             {
                 sb.AppendLine("=== СТРУКТУРА ВЫБРАННОГО КОДА ===");
-                // (Ваш оригинальный вывод дерева папок кода)
+                // (Твой оригинальный вывод дерева папок кода)
             }
 
             sb.AppendLine("=== СОДЕРЖИМОЕ ВЫБРАННЫХ ФАЙЛОВ ===");
@@ -235,6 +253,7 @@ public static class ContextBuilderService
 
         return sb;
     }
+
     // Вспомогательный метод для рекурсивного сбора чекнутых синтаксических нод внутри файла
     private static void FindCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
     {
@@ -428,13 +447,67 @@ public static class ContextBuilderService
         }
 
         // 4. Финальное сохранение PDF-документа на жесткий диск
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: УПРЕЖДАЮЩЕЕ УДАЛЕНИЕ И АВТОПОДБОР ИМЕНИ ПРИ БЛОКИРОВКЕ -->
+        // ================================================================= -->
         var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
         renderer.Document = document;
         renderer.RenderDocument();
 
-        string fullPath = Path.Combine(outputPath, fileName);
-        renderer.PdfDocument.Save(fullPath);
+        // Обеспечиваем корректное расширение для базового имени
+        string cleanFileName = fileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetFileNameWithoutExtension(fileName)
+            : fileName;
+
+        string baseFullPath = Path.Combine(outputPath, cleanFileName + ".pdf");
+        string finalFullPath = baseFullPath;
+
+        // ПРИНУДИТЕЛЬНОЕ УПРЕЖДАЮЩЕЕ УДАЛЕНИЕ
+        if (File.Exists(baseFullPath))
+        {
+            try
+            {
+                File.Delete(baseFullPath);
+            }
+            catch (IOException)
+            {
+                // СЦЕНАРИЙ БЛОКИРОВКИ: Файл физически занят ОС или другой программой.
+                // Генерируем уникальный суффикс на основе текущей метки времени (ЧасыМинутыСекунды)
+                string timeSuffix = DateTime.Now.ToString("HHmmss");
+                finalFullPath = Path.Combine(outputPath, $"{cleanFileName}_{timeSuffix}.pdf");
+
+                // На всякий случай выводим отладочное сообщение в консоль, чтобы автор знал об изменении имени
+                System.Diagnostics.Debug.WriteLine($"[Внимание] Файл {baseFullPath} заблокирован. Автопереключение на: {finalFullPath}");
+            }
+            catch (Exception ex)
+            {
+                string errTitle = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
+                System.Windows.MessageBox.Show(ex.Message, errTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                return;
+            }
+        }
+
+        // Сохраняем PDF по гарантированно свободному финальному пути
+        try
+        {
+            renderer.PdfDocument.Save(finalFullPath);
+        }
+       
+         catch (Exception ex)
+        {
+            // Вытаскиваем локализованные заголовки и шаблоны сообщений из ресурсов приложения
+            string errTitle = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
+                ?? "Ошибка";
+
+            string errTemplate = System.Windows.Application.Current.Resources["Str_Err_PdfSaveFailed"] as string
+                ?? "Не удалось сохранить PDF документ:";
+
+            // Выводим полностью интернациональное сообщение, подставляя техническую ошибку ОС вслед за шаблоном
+            System.Windows.MessageBox.Show($"{errTemplate} {ex.Message}", errTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+        }
     }
+
+    
 
     private static void SetSectionMargins(MigraDoc.DocumentObjectModel.Section section)
     {

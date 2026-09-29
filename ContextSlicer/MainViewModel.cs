@@ -379,6 +379,14 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string appDir = Path.Combine(appData, "ContextSlicer");
+        string projectsDir = Path.Combine(appDir, "projects");
+
+        // Создаем всю иерархию папок упреждающе
+        Directory.CreateDirectory(appDir);
+        Directory.CreateDirectory(projectsDir);
+
         // Точный и правильный путь к настройке шрифтов Windows в PDFsharp/MigraDoc
         PdfSharp.Fonts.GlobalFontSettings.UseWindowsFontsUnderWindows = true;
 
@@ -386,8 +394,8 @@ public partial class MainViewModel : ObservableObject
         System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
         // ... остальной код конструктора без изменений ...
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string appDir = Path.Combine(appData, "ContextSlicer");
+       // string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+       // string appDir = Path.Combine(appData, "ContextSlicer");
         Directory.CreateDirectory(appDir);
         _configFilePath = Path.Combine(appDir, "projects.json");
         IncludeDirectoryStructure = Properties.Settings.Default.IncludeDirectoryStructure;
@@ -889,9 +897,8 @@ public partial class MainViewModel : ObservableObject
     }
 
 
-    // ИСПРАВЛЕНО: Точечная очистка путей внутри ExecuteSave перед записью JSON
     // ================================================================= -->
-    // ВОССТАНОВЛЕНО: ЧИСТОЕ МОНОЛИТНОЕ СОХРАНЕНИЕ БЕЗ ХАРДКОДА СТРОК    -->
+    // ИСПРАВЛЕНО: ИЗОЛИРОВАННОЕ СОХРАНЕНИЕ ТЕКУЩЕГО ПРОЕКТА В СВОЙ JSON -->
     // ================================================================= -->
     private void ExecuteSave(bool showMessage)
     {
@@ -899,7 +906,7 @@ public partial class MainViewModel : ObservableObject
         {
             if (!string.IsNullOrWhiteSpace(ProjectNameInput))
             {
-                var autoProject = new ProjectConfig { ProjectName = ProjectNameInput };
+                var autoProject = new ProjectConfig { ProjectName = ProjectNameInput.Trim() };
                 Projects.Add(autoProject);
                 SelectedProject = autoProject;
             }
@@ -907,7 +914,6 @@ public partial class MainViewModel : ObservableObject
             {
                 if (showMessage)
                 {
-                    // ИСПРАВЛЕНО: Мультиязычный вызов предупреждения об пустом имени проекта
                     string warnMsg = Application.Current.Resources["Str_Msg_EnterProjectName"] as string
                         ?? "Введите имя проекта перед сохранением.";
                     string warnTitle = Application.Current.Resources["Str_Title_Warning"] as string
@@ -918,6 +924,7 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
+        // Синхронизация текущего выбранного модуля с UI-нодами дерева перед сохранением
         if (SelectedModule != null && RootNode != null)
         {
             var checkedFilesList = new List<string>();
@@ -941,7 +948,6 @@ public partial class MainViewModel : ObservableObject
             {
                 string effFilePath = isTextProject ? string.Empty : node.RelativePath;
                 string cleanEntryPath = node.EntryPath;
-
                 checkedEntriesList.Add(new SyntaxEntry
                 {
                     FilePath = effFilePath,
@@ -962,53 +968,54 @@ public partial class MainViewModel : ObservableObject
             if (mIdx >= 0) Modules[mIdx] = SelectedModule;
         }
 
-        if (SelectedProject == null) return;
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: АТОМАРНАЯ ФИКСАЦИЯ ССЫЛКИ ДЛЯ ЗАЩИТЫ ОТ CLOSE-NULL     -->
+        // ================================================================= -->
+        // Фиксируем ссылку на объект в локальной переменной на входе
+        var currentProject = SelectedProject;
+        if (currentProject == null) return; // Если проект УЖЕ null — выходим сразу
 
-        SelectedProject.ProjectName = ProjectNameInput;
-        SelectedProject.RootPath = RootPath;
-        SelectedProject.OutputPath = OutputPath;
-        SelectedProject.PromptRules = PromptRules;
-        SelectedProject.IncludeDirectoryStructure = IncludeDirectoryStructure;
-        SelectedProject.Modules = Modules.ToList();
+        // Обновляем метаданные, обращаясь СТРОГО к локальной безопасной копии currentProject
+        currentProject.ProjectName = ProjectNameInput.Trim();
+        currentProject.RootPath = RootPath;
+        currentProject.OutputPath = OutputPath;
+        currentProject.PromptRules = PromptRules;
+        currentProject.IncludeDirectoryStructure = IncludeDirectoryStructure;
+        currentProject.Modules = Modules.ToList();
 
-        var pIdx = Projects.IndexOf(SelectedProject);
+        var pIdx = Projects.IndexOf(currentProject);
         if (pIdx >= 0)
         {
-            Projects[pIdx] = SelectedProject;
-            SelectedProject = Projects[pIdx];
+            Projects[pIdx] = currentProject;
         }
 
-        try
-        {
-            string json = JsonConvert.SerializeObject(Projects, Formatting.Indented);
-            File.WriteAllText(_configFilePath, json);
+        // Вычисляем путь к папке сохранения app_data/ContextSlicer/projects/
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
 
+        // ИСПРАВЛЕНО: Вызываем метод Save у локального объекта currentProject, который гарантированно не null!
+        bool isSaved = currentProject.Save(targetDir);
+
+        if (isSaved)
+        {
             if (showMessage)
             {
-                // ИСПРАВЛЕНО: Локализованное окно успешного сохранения
-                string successMsg = Application.Current.Resources["Str_Msg_SaveSuccess"] as string
-                    ?? "Всё успешно сохранено!";
+                string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
+                    ?? "Настройки проекта успешно сохранены.";
                 string successTitle = Application.Current.Resources["Str_Title_Success"] as string
                     ?? "Успех";
                 System.Windows.MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
-        catch (Exception ex)
+        else if (showMessage)
         {
-            if (showMessage)
-            {
-                // ИСПРАВЛЕНО: Локализованное окно системной ошибки ввода-вывода
-                string errorPrefix = Application.Current.Resources["Str_Err_SaveJson"] as string
-                    ?? "Ошибка сохранения JSON";
-                string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
-                    ?? "Ошибка";
-                System.Windows.MessageBox.Show($"{errorPrefix}: {ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+            string errorPrefix = Application.Current.Resources["Str_ItemSaveError"] as string
+                ?? "Ошибка сохранения файла проекта";
+            string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
+                ?? "Ошибка";
+            System.Windows.MessageBox.Show(errorPrefix, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
-
-
-
 
 
     // Вспомогательный метод для глубокой очистки синтаксических нод
@@ -1056,7 +1063,91 @@ public partial class MainViewModel : ObservableObject
         }
         return true;
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ЖЕЛЕЗНОЕ ФИЗИЧЕСКОЕ УДАЛЕНИЕ ИЗОЛИРОВАННОГО JSON     -->
+    // ================================================================= -->
+    [RelayCommand]
+    private void DeleteProject(ProjectConfig? project)
+    {
+        // ИСПРАВЛЕНО: Если команда вызвана из контекстного меню, параметр 'project' 
+        // гарантированно содержит именно ту строку, на которую кликнули!
+        var targetProject = project ?? SelectedProject;
+        if (targetProject == null) return;
 
+        // Запрашиваем мультиязычное подтверждение удаления
+        string confirmTemplate = Application.Current.Resources["Str_Msg_ConfirmDeleteProj"] as string
+            ?? "Вы уверены, что хотите полностью удалить проект \"{0}\" и все его модули?";
+        string confirmMsg = string.Format(confirmTemplate, targetProject.ProjectName);
+        string title = Application.Current.Resources["Str_Title_Confirmation"] as string ?? "Подтверждение";
+
+        var result = System.Windows.MessageBox.Show(confirmMsg, title, MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (result == MessageBoxResult.Yes)
+        {
+            try
+            {
+                // Вычисляем точный физический путь к файлу проекта в папке %AppData%
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+
+                // Очищаем имя в точности так же, как это делает метод ProjectConfig.Save
+                string safeName = string.Concat(targetProject.ProjectName.Split(Path.GetInvalidFileNameChars())).Trim();
+                if (string.IsNullOrWhiteSpace(safeName)) safeName = "UntitledProject";
+
+                string projectFilePath = Path.Combine(targetDir, $"{safeName}.json");
+
+                // ПРИНУДИТЕЛЬНОЕ УДАЛЕНИЕ С ДИСКА
+                if (File.Exists(projectFilePath))
+                {
+                    File.Delete(projectFilePath);
+                    System.Diagnostics.Debug.WriteLine($"[Успех] Файл проекта успешно удален: {projectFilePath}");
+                }
+                else
+                {
+                    // Подстраховка на случай, если проект был переименован на лету в UI:
+                    // Пробуем найти файл в папке по точному совпадению внутренней структуры, если имя файла разошлось
+                    var allFiles = Directory.GetFiles(targetDir, "*.json");
+                    foreach (var file in allFiles)
+                    {
+                        var checkProj = ProjectConfig.Load(file);
+                        if (checkProj != null && checkProj.ProjectName == targetProject.ProjectName)
+                        {
+                            File.Delete(file);
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Delete Project File Error] {ex.Message}");
+            }
+
+            // Вычищаем проект из оперативной памяти и коллекции интерфейса ListBox
+            if (targetProject == SelectedProject)
+            {
+                SelectedProject = null;
+            }
+
+            Projects.Remove(targetProject);
+
+            // Автоматически переключаем фокус на оставшийся проект
+            if (Projects.Count > 0)
+            {
+                SelectedProject = Projects[0];
+            }
+            else
+            {
+                // Если проектов больше нет — полностью очищаем дерево UI
+                RootNode = null;
+                Modules.Clear();
+                OnPropertyChanged(nameof(DisplayProjectName));
+            }
+        }
+    }
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПЕРЕИМЕНОВАНИЕ ФАЙЛА ПРОЕКТА И СТИРАНИЕ СТАРОЙ ВЕРСИИ -->
+    // ================================================================= -->
     [RelayCommand]
     private void UpdateCurrentProjectName()
     {
@@ -1066,24 +1157,50 @@ public partial class MainViewModel : ObservableObject
 
         if (!IsValidName(newName, out string validationError))
         {
-            IsProjectNameInvalid = true; // ВКЛЮЧАЕМ ПОДСВЕТКУ
+            IsProjectNameInvalid = true;
             System.Windows.MessageBox.Show(validationError, "Ошибка валидации проекта", MessageBoxButton.OK, MessageBoxImage.Warning);
             ProjectNameInput = SelectedProject.ProjectName;
             return;
         }
 
-        IsProjectNameInvalid = false; // СБРАСЫВАЕМ ПОДСВЕТКУ
+        IsProjectNameInvalid = false;
+
+        try
+        {
+            // Вычисляем путь к старому файлу, чтобы стереть его перед записью нового
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+
+            string oldSafeName = string.Concat(SelectedProject.ProjectName.Split(Path.GetInvalidFileNameChars())).Trim();
+            string oldProjectFilePath = Path.Combine(targetDir, $"{oldSafeName}.json");
+
+            // Удаляем старый файл-призрак с диска, так как имя проекта меняется
+            if (File.Exists(oldProjectFilePath))
+            {
+                File.Delete(oldProjectFilePath);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Rename File Cleanup Error] {ex.Message}");
+        }
+
+        // Присваиваем новое имя и сохраняем по новому свободному пути
         SelectedProject.ProjectName = newName;
 
         var index = Projects.IndexOf(SelectedProject);
-        if (index >= 0) { Projects[index] = SelectedProject; SelectedProject = Projects[index]; }
+        if (index >= 0)
+        {
+            Projects[index] = SelectedProject;
+            SelectedProject = Projects[index];
+        }
+
         OnPropertyChanged(nameof(DisplayProjectName));
         SilentSave();
     }
 
-    [RelayCommand]
-  
 
+    [RelayCommand]
     partial void OnProjectNameInputChanged(string value) => IsProjectNameInvalid = false;
     partial void OnModuleNameInputChanged(string value) => IsModuleNameInvalid = false;
 
@@ -1169,26 +1286,52 @@ public partial class MainViewModel : ObservableObject
             EditProjectOutputPathInput = dialog.FileName;
         }
     }
-
-
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ДИНАМИЧЕСКАЯ ВЫЧИТКА ИЗОЛИРОВАННЫХ ФАЙЛОВ ПРОЕКТОВ   -->
+    // ================================================================= -->
     private void LoadProjects()
     {
-        if (File.Exists(_configFilePath))
+        // Запускаем одноразовый мигратор старой базы projects.json
+        ProjectMigrationService.MigrateOldProjectsIfNeeded();
+
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+
+        if (!Directory.Exists(targetDir))
         {
-            try
+            Directory.CreateDirectory(targetDir);
+            Projects = new ObservableCollection<ProjectConfig>();
+            return;
+        }
+
+        var loadedProjects = new List<ProjectConfig>();
+
+        try
+        {
+            var projectFiles = Directory.GetFiles(targetDir, "*.json");
+            foreach (var file in projectFiles)
             {
-                string json = File.ReadAllText(_configFilePath);
-                var list = JsonConvert.DeserializeObject<List<ProjectConfig>>(json);
-                if (list != null)
+                // Используем инкапсулированный статический метод загрузки
+                var project = ProjectConfig.Load(file);
+                if (project != null)
                 {
-                    Projects = new ObservableCollection<ProjectConfig>(list);
-                    if (Projects.Count > 0) SelectedProject = Projects[0];
+                    loadedProjects.Add(project);
                 }
             }
-            catch { }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Directory Access Error] {ex.Message}");
+        }
+
+        var sortedList = loadedProjects.OrderBy(p => p.ProjectName).ToList();
+        Projects = new ObservableCollection<ProjectConfig>(sortedList);
+
+        if (Projects.Count > 0)
+        {
+            SelectedProject = Projects[0];
         }
     }
-
     // Метод автоматической генерации безопасного имени файла
     private string GetSafeFileName(string name)
     {
