@@ -32,6 +32,7 @@ namespace ContextSlicer
         public string PromptRules { get; set; } = string.Empty;
         public bool IncludeDirectoryStructure { get; set; } = true;
         public string GoogleApiKey { get; set; } = string.Empty;
+        public bool IncludeImages { get; set; } = false;
 
 
         // ОБНОВЛЕНО: Вместо bool IsUrl теперь используем перечисление типов

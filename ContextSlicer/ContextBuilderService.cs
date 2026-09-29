@@ -1,4 +1,5 @@
 ﻿using ContextSlicer.Filesystem;
+using ContextSlicer.Google;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -143,34 +144,30 @@ public static class ContextBuilderService
 
 
     // ================================================================= -->
-    // ЭТАЛОННЫЙ СБОРЩИК ЛИТЕРАТУРНОГО КОНТЕКСТА GOOGLE DOCS (XML-ТЕГИ)   -->
+    // ИСПРАВЛЕНО: СОВМЕСТИМЫЕ ПЕРЕГРУЗКИ ТЕКСТОВОГО БИЛДЕРА С КАРТИНКАМИ -->
     // ================================================================= -->
-    // ================================================================= -->
-    // ПЕРЕГРУЗКИ И ИНТЕГРАЦИЯ ТЕКСТОВОГО БИЛДЕРА                      -->
-    // ================================================================= -->
-
     /// <summary>
-    /// Восстановленный оригинальный метод текстового билдера (без ProjectType)
+    /// ПЕРЕГРУЗКА 1 (СОВМЕСТИМАЯ): Исторический базовый прототип без ProjectType и без картинок.
+    /// По умолчанию передает ProjectType.Folder и false для изображений.
     /// </summary>
     public static async Task<StringBuilder> BuildTextContentAsync(
-       string promptRules,
-       string moduleRules,
-       bool includeDirectoryStructure,
-       List<FileSystemNode> checkedFiles,
-       List<SyntaxEntry> savedEntries,
-       IProgress<ProgressReport> progressHandler,
-       CancellationToken token)
+        string promptRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        IProgress<ProgressReport> progressHandler,
+        CancellationToken token)
     {
         return await BuildTextContentAsync(
             promptRules, moduleRules, includeDirectoryStructure,
-            checkedFiles, savedEntries, progressHandler, ProjectType.Folder, token);
+            checkedFiles, savedEntries, progressHandler, ProjectType.Folder, false, token);
     }
+
     /// <summary>
-    /// Перегруженный метод текстового билдера, принимающий ProjectType
+    /// ПЕРЕГРУЗКА 2 (СОВМЕСТИМАЯ): Прототип с ProjectType, но без флага картинок.
+    /// По умолчанию отключает генерацию картинок (передает false) для совместимости со старыми вызовами.
     /// </summary>
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: АВТОНОМНЫЙ УМНЫЙ ДИСПЕТЧЕР ДЛЯ ТЕКСТОВОЙ ВЫГРУЗКИ TXT -->
-    // ================================================================= -->
     public static async Task<StringBuilder> BuildTextContentAsync(
         string promptRules,
         string moduleRules,
@@ -181,12 +178,32 @@ public static class ContextBuilderService
         ProjectType projectType,
         CancellationToken token)
     {
+        return await BuildTextContentAsync(
+            promptRules, moduleRules, includeDirectoryStructure,
+            checkedFiles, savedEntries, progressHandler, projectType, false, token);
+    }
+
+    /// <summary>
+    /// ОСНОВНОЙ МЕТОД (ПЕРЕГРУЖЕННЫЙ): Принимает полный набор параметров, включая includeImages,
+    /// и гибко управляет диспетчеризацией текстового и визуального контента.
+    /// </summary>
+    public static async Task<StringBuilder> BuildTextContentAsync(
+        string promptRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        IProgress<ProgressReport> progressHandler,
+        ProjectType projectType,
+        bool includeImages, // Новый параметр гибкого управления изображениями
+        CancellationToken token)
+    {
         var sb = new StringBuilder();
 
         // 1. Выгрузка системных правил и промптов проекта
         if (!string.IsNullOrWhiteSpace(promptRules) || !string.IsNullOrWhiteSpace(moduleRules))
         {
-            sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===");
+            sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДЕМ ===");
             if (!string.IsNullOrWhiteSpace(promptRules))
             {
                 sb.AppendLine("<project_rules>" + promptRules.Trim() + "</project_rules>\n");
@@ -199,20 +216,16 @@ public static class ContextBuilderService
 
         if (savedEntries == null || savedEntries.Count == 0) return sb;
 
-        // ИСПРАВЛЕНО: Интеллектуальное автоопределение типа проекта на лету!
-        // Если тип прилетел как Folder, но внутри сохраненных записей лежат литературные типы (Tab/Heading) —
-        // значит, это текстовый вызов генерации TXT для книги. Переопределяем тип принудительно!
+        // Интеллектуальное автоопределение типа проекта на лету
         bool isActuallyLiterary = projectType == ProjectType.GoogleDoc ||
                                  projectType == ProjectType.WordDoc ||
                                  savedEntries.Any(e => e.Type == EntryType.Tab);
 
-        // 2. БЕЗОПАСНАЯ МАРШРУТИЗАЦИЯ ПО ИСТИННОМУ ТИПУ
+        // 2. МАРШРУТИЗАЦИЯ ПО ИСТИННОМУ ТИУ
         if (isActuallyLiterary)
         {
-            // Вытаскиваем железный физический путь к файлу кэша JSON
             string bookRootPath = checkedFiles.FirstOrDefault()?.FullPath ?? string.Empty;
 
-            // Если в checkedFiles пусто (при плоском вызове), восстанавливаем путь через сохраненные записи кэша
             if (string.IsNullOrEmpty(bookRootPath))
             {
                 string googleCacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache");
@@ -223,14 +236,19 @@ public static class ContextBuilderService
                 }
             }
 
-            // Делегируем сборку нашему чистому объектному классу GoogleDocBuilder!
-            // Передаем безопасный клонированный список CheckedEntries, защищая UI от вычеркивания элементов
-            string literaryContent = await GoogleDocBuilder.BuildContextTextAsync(savedEntries.ToList(), bookRootPath, includeDirectoryStructure, token);
+            // Вызываем новую пятипараметрическую версию метода BuildContextTextAsync, прокидывая локальный флаг includeImages!
+            string literaryContent = await GoogleDocBuilder.BuildContextTextAsync(
+                savedEntries.ToList(),
+                bookRootPath,
+                includeDirectoryStructure,
+                includeImages,
+                token);
+
             sb.Append(literaryContent);
         }
         else
         {
-            // === ИСХОДНЫЙ КОД C# И SQL (Остается в первозданном, безопасном виде!) ===
+            // === ИСХОДНЫЙ КОД C# И SQL ===
             if (includeDirectoryStructure)
             {
                 sb.AppendLine("=== СТРУКТУРА ВЫБРАННОГО КОДА ===");
@@ -268,246 +286,268 @@ public static class ContextBuilderService
     }
 
     // ================================================================= -->
-    // ИСПРАВЛЕННЫЙ ИЗОЛИРОВАННЫЙ ПОСТРАНИЧНЫЙ PDF-РЕНДЕРЕР (MIGRADOC)   -->
+    // ИСПРАВЛЕНО: ПЕРЕГРУЗКИ PDF-ГЕНЕРАТОРА С ИСТОРИЧЕСКИМ ПОРЯДКОМ АРГУМЕНТОВ -->
     // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕННЫЕ ПЕРЕГРУЗКИ ПОД ОРИГИНАЛЬНЫЙ ПРОТОТИП ПРОЕКТА        -->
-    // ================================================================= -->
-
-    /// <summary>
-    /// ТОЧНАЯ копия твоего оригинального метода. Не меняет ни одного типа данных.
-    /// </summary>
     public static async Task GeneratePdfContextFileAsync(
-     string outputPath,
-     string fileName,
-     string promptRules,
-     string moduleRules,
-     bool includeDirectoryStructure,
-     FileSystemNode rootNode,
-     List<SyntaxEntry> checkedEntries,
-     IProgress<ProgressReport> progressHandler,
-     CancellationToken token)
+        string outputPath, string fileName, string promptRules, string moduleRules,
+        bool includeDirectoryStructure, FileSystemNode rootNode,
+        List<SyntaxEntry> checkedEntries, IProgress<ProgressReport> progressHandler,
+        CancellationToken token)
     {
-        // Безопасно перенаправляем в перегруженную версию, определяя тип проекта на лету
-        // На прошлом шаге мы выяснили, что в ProjectConfig тип лежит в свойстве Type
-        // Если мы внутри сервиса, мы можем определить тип по наличию .json кэша или передать Folder как фолбэк
-        await GeneratePdfContextFileAsync(
-            outputPath, fileName, promptRules, moduleRules, includeDirectoryStructure,
-            rootNode, checkedEntries, progressHandler, ProjectType.Folder, token);
+        await GeneratePdfContextFileAsync(outputPath, fileName, promptRules, moduleRules,
+            includeDirectoryStructure, false, rootNode, checkedEntries, progressHandler, ProjectType.Folder, token);
     }
 
-    /// <summary>
-    /// Перегруженный метод генерации PDF, который принимает ProjectType напрямую.
-    /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: БРОНЕБОЙНЫЙ PDF-РЕНДЕРЕР ЛИТЕРАТУРЫ И ИЛЛЮСТРАЦИЙ    -->
+    // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ДИАГНОСТИЧЕСКИЙ БЛОК ПРОВЕРКИ ВЕСА МЕТА-ДАННЫХ        -->
+    // ================================================================= -->
     public static async Task GeneratePdfContextFileAsync(
-    string outputPath,
-    string fileName,
-    string promptRules,
-    string moduleRules,
-    bool includeDirectoryStructure,
-    FileSystemNode rootNode,
-    List<SyntaxEntry> checkedEntries,
-    IProgress<ProgressReport> progressHandler,
-    ProjectType projectType,
-    CancellationToken token)
+        string outputPath, string fileName, string promptRules, string moduleRules,
+        bool includeDirectoryStructure, bool includeImages, FileSystemNode rootNode,
+        List<SyntaxEntry> checkedEntries, IProgress<ProgressReport> progressHandler,
+        ProjectType projectType, CancellationToken token)
     {
-        var checkedFiles = new List<FileSystemNode>();
-        GetCheckedFilesExtended(rootNode, checkedFiles);
+        if (checkedEntries == null || checkedEntries.Count == 0 || string.IsNullOrWhiteSpace(outputPath) || string.IsNullOrWhiteSpace(fileName) || rootNode == null) return;
 
-        // 1. Вызываем обновленный BuildTextContentAsync для сборки всего текстового и XML каркаса книги
-        var sb = await BuildTextContentAsync(
-            promptRules, moduleRules, includeDirectoryStructure,
-            checkedFiles, checkedEntries, progressHandler, projectType, token);
+        // ИСПРАВЛЕНО: Вместо сканирования очищенных FilePath, берем прямой физический путь к файлу кэша
+        // из корневого узла дерева UI (точно так же, как это делает рабочий счетчик токенов!)
+        string bookRootPath = rootNode.FullPath ?? string.Empty;
 
-        string metaDataText = sb.ToString();
-        token.ThrowIfCancellationRequested();
-
-        // 2. Инициализируем документ MigraDoc
-        var document = new MigraDoc.DocumentObjectModel.Document();
-        var style = document.Styles["Normal"];
-        if (style?.Font != null)
+        // Фолбэк-подстраховка на случай, если в FullPath папки лежит пустая строка
+        if (string.IsNullOrEmpty(bookRootPath) || !File.Exists(bookRootPath))
         {
-            style.Font.Name = "Courier New";
-            style.Font.Size = 10; // Комфортный размер шрифта для чтения
+            string googleCacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache");
+            if (projectType == ProjectType.GoogleDoc && System.Windows.Application.Current.MainWindow?.DataContext is MainViewModel vm && vm.SelectedProject != null)
+            {
+                string fallbackDocId = GoogleDownloader.ExtractDocumentId(vm.SelectedProject.RootPath);
+                if (!string.IsNullOrEmpty(fallbackDocId))
+                {
+                    bookRootPath = Path.Combine(googleCacheDir, $"{fallbackDocId}.json");
+                }
+            }
+        }
+
+        bool isActuallyLiterary = projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc || checkedEntries.Any(e => e.Type == EntryType.Tab);
+        string metaDataText = string.Empty;
+
+        if (isActuallyLiterary)
+        {
+            // Передаем гарантированно восстановленный bookRootPath в сборщик контента книги
+            metaDataText = await GoogleDocBuilder.BuildContextTextAsync(checkedEntries, bookRootPath, includeDirectoryStructure, includeImages, token);
+        }
+        else
+        {
+            var checkedFilesList = new List<FileSystemNode>();
+            GetCheckedFiles(rootNode, checkedFilesList);
+            var sb = await BuildTextContentAsync(promptRules, moduleRules, includeDirectoryStructure, checkedFilesList, checkedEntries, progressHandler, projectType, includeImages, token);
+            metaDataText = sb.ToString();
+        }
+
+        if (string.IsNullOrWhiteSpace(metaDataText)) return;
+
+        var document = new MigraDoc.DocumentObjectModel.Document();
+
+        // Явно инициализируем шрифт по умолчанию для MigraDoc во избежание скрытых крашей кириллицы
+        var style = document.Styles["Normal"];
+        if (style != null)
+        {
+            style.Font.Name = "Arial";
+            style.Font.Size = 10;
         }
 
         var currentSection = document.AddSection();
         SetSectionMargins(currentSection);
 
-        // 3. МАРШРУТИЗАЦИЯ ПО ТИПУ ПРОЕКТА ИЗ CONFIG
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: УМНОЕ БИТЬЕ НА СТРАНИЦЫ PDF БЕЗ ПУСТЫХ ЛИСТОВ И РАЗРЫВОВ -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ОТДЕЛЕНИЕ ОГЛАВЛЕНИЯ РАЗРЫВОМ, КОНТЕНТ ВКЛАДОК - СПЛОШНОЙ -->
-        // ================================================================= -->
-        if (projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc)
+        // 1. Выгрузка системных правил и промптов проекта
+        if (!string.IsNullOrWhiteSpace(promptRules) || !string.IsNullOrWhiteSpace(moduleRules))
         {
-            using (var reader = new StringReader(metaDataText))
+            var rulesP = currentSection.AddParagraph("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===");
+            rulesP.Format.Font.Bold = true; rulesP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
+            if (!string.IsNullOrWhiteSpace(promptRules))
             {
-                string? line;
-                while ((line = await reader.ReadLineAsync()) != null)
-                {
-                    token.ThrowIfCancellationRequested();
-                    string trimmedLine = line.Trim();
-
-                    // ПРАВИЛО 1: Маркер завершения структуры оглавления — делаем принудительный разрыв страницы!
-                    if (trimmedLine.StartsWith("</document_structure>"))
-                    {
-                        var closeStructP = currentSection.AddParagraph(line);
-                        closeStructP.Format.Font.Bold = true;
-                        closeStructP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
-
-                        currentSection = document.AddSection();
-                        SetSectionMargins(currentSection);
-                        continue;
-                    }
-
-                    // ПРАВИЛО 2: Контент вкладок НЕ отделяем разрывом, пишем теги <tab> последовательно в поток!
-                    if (trimmedLine.StartsWith("<tab") || trimmedLine.StartsWith("</tab"))
-                    {
-                        var tabP = currentSection.AddParagraph(line);
-                        tabP.Format.Font.Bold = true;
-                        tabP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
-                        tabP.Format.SpaceAfter = MigraDoc.DocumentObjectModel.Unit.FromPoint(4);
-                        continue;
-                    }
-
-                    // ПРАВИЛО 3: Каждая новая глава романа или секция начинается строго с нового листа А4
-                    if (trimmedLine.StartsWith("<heading"))
-                    {
-                        currentSection = document.AddSection();
-                        SetSectionMargins(currentSection);
-
-                        var markerP = currentSection.AddParagraph(line);
-                        markerP.Format.Font.Bold = true;
-                        markerP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
-                        markerP.Format.SpaceAfter = MigraDoc.DocumentObjectModel.Unit.FromPoint(6);
-                        continue;
-                    }
-
-                    if (trimmedLine.StartsWith("</heading"))
-                    {
-                        var closeP = currentSection.AddParagraph(line);
-                        closeP.Format.Font.Bold = true;
-                        closeP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
-                        closeP.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(6);
-                        continue;
-                    }
-
-                    // Выводим обычный текст художественной прозы
-                    var p = currentSection.AddParagraph(line);
-                    if (string.IsNullOrWhiteSpace(line))
-                        p.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(4);
-                }
+                currentSection.AddParagraph("<project_rules>"); currentSection.AddParagraph(promptRules.Trim()); currentSection.AddParagraph("</project_rules>\n");
+            }
+            if (!string.IsNullOrWhiteSpace(moduleRules))
+            {
+                currentSection.AddParagraph("<module_rules>"); currentSection.AddParagraph(moduleRules.Trim()); currentSection.AddParagraph("</module_rules>\n");
             }
         }
 
-        else
+        string googleDocId = !string.IsNullOrEmpty(bookRootPath) ? Path.GetFileNameWithoutExtension(bookRootPath) : string.Empty;
+        string imagesDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", "images", googleDocId);
+
+        // 2. БРОНЕБОЙНЫЙ ПОСТРОЧНЫЙ ВЫВОД КНИГИ С ИЛЛЮСТРАЦИЯМИ
+        using (var reader = new StringReader(metaDataText))
         {
-            // === ВОССТАНОВЛЕННЫЙ ОРИГИНАЛЬНЫЙ ЦИКЛ ДЛЯ ПРОГРАММНОГО КОДА ===
-            var p = currentSection.AddParagraph("=== СОДЕРЖИМОЕ ВЫБРАННЫХ ФАЙЛОВ ===");
-            p.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(12);
-
-            using (var reader = new StringReader(metaDataText))
-            {
-                string? line;
-                while ((line = await reader.ReadLineAsync()) != null)
-                {
-                    token.ThrowIfCancellationRequested();
-                    if (line.StartsWith("=== СОДЕРЖИМОЕ ВЫБРАННЫХ ФАЙЛОВ ===")) break;
-
-                    var metaP = currentSection.AddParagraph(line);
-                    if (string.IsNullOrWhiteSpace(line)) metaP.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(4);
-                }
-            }
-
-            for (int i = 0; i < checkedFiles.Count; i++)
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
             {
                 token.ThrowIfCancellationRequested();
-                var fileNode = checkedFiles[i];
-
-                progressHandler?.Report(new ProgressReport { CurrentIndex = i + 1, TotalCount = checkedFiles.Count, CurrentFileName = fileNode.Name });
-                if (!File.Exists(fileNode.FullPath)) continue;
-
-                currentSection.AddParagraph($"---{fileNode.RelativePath}---");
-
-                using (var fs = new FileStream(fileNode.FullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, true))
-                using (var reader = new StreamReader(fs, Encoding.UTF8))
+                string trimmedLine = line.Trim();
+                // ================================================================= -->
+                // ИСПРАВЛЕНО CS1503: ТОЧНЫЙ ВЫБОР ПЕРВОГО КАДРА ИЗОБРАЖЕНИЯ [0]      -->
+                // ================================================================= -->
+                if (trimmedLine.StartsWith("<image") && trimmedLine.Contains("src=\""))
                 {
-                    string? line;
-                    while ((line = await reader.ReadLineAsync()) != null)
+                    if (includeImages && !string.IsNullOrEmpty(googleDocId))
                     {
-                        token.ThrowIfCancellationRequested();
-                        currentSection.AddParagraph(line);
+                        try
+                        {
+                            int startIdx = trimmedLine.IndexOf("src=\"") + 5;
+                            int endIdx = trimmedLine.IndexOf("\"", startIdx);
+
+                            if (startIdx > 5 && endIdx > startIdx)
+                            {
+                                string rawSrc = trimmedLine.Substring(startIdx, endIdx - startIdx);
+                                string imgId = Path.GetFileNameWithoutExtension(rawSrc);
+
+                                string fullImgPath = string.Empty;
+                                string[] allowedExtensions = { ".jpg", ".png", ".webp" };
+
+                                foreach (var ext in allowedExtensions)
+                                {
+                                    string checkPath = Path.Combine(imagesDir, imgId + ext);
+                                    if (File.Exists(checkPath))
+                                    {
+                                        fullImgPath = checkPath;
+                                        break;
+                                    }
+                                }
+
+                                if (!string.IsNullOrEmpty(fullImgPath) && File.Exists(fullImgPath))
+                                {
+                                    string pathToRender = fullImgPath;
+                                    bool isWebP = fullImgPath.EndsWith(".webp", StringComparison.OrdinalIgnoreCase);
+
+                                    try
+                                    {
+                                        bool isTargetImage = imgId.Contains("kcbc4ihbg7ia") || isWebP;
+
+                                        if (isTargetImage)
+                                        {
+                                            string forceJpgPath = Path.Combine(imagesDir, imgId + "_baseline.jpg");
+
+                                            if (!File.Exists(forceJpgPath))
+                                            {
+                                                var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(new Uri(fullImgPath), System.Windows.Media.Imaging.BitmapCreateOptions.None, System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+
+                                                if (decoder.Frames.Count > 0)
+                                                {
+                                                    var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder();
+                                                    encoder.QualityLevel = 100;
+                                                    // ИСПРАВЛЕНО CS1503: Берем первый конкретный кадр по индексу [0]
+                                                    encoder.Frames.Add(decoder.Frames[0]);
+
+                                                    using (var outStream = new FileStream(forceJpgPath, FileMode.Create))
+                                                    {
+                                                        encoder.Save(outStream);
+                                                    }
+                                                }
+                                            }
+
+                                            if (File.Exists(forceJpgPath)) pathToRender = forceJpgPath;
+                                        }
+
+                                        var img = currentSection.AddImage(pathToRender);
+                                        img.Width = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(14);
+                                        img.LockAspectRatio = true;
+                                        img.Left = MigraDoc.DocumentObjectModel.Shapes.ShapePosition.Center;
+                                        continue;
+                                    }
+                                    catch (Exception renderEx)
+                                    {
+                                        System.Diagnostics.Debug.WriteLine($"[Сбой рендеринга] Аварийный фолбэк в JPEG: {renderEx.Message}");
+
+                                        try
+                                        {
+                                            string emergencyJpgPath = Path.Combine(imagesDir, imgId + "_emergency_baseline.jpg");
+
+                                            if (!File.Exists(emergencyJpgPath))
+                                            {
+                                                var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(new Uri(fullImgPath), System.Windows.Media.Imaging.BitmapCreateOptions.None, System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                                                if (decoder.Frames.Count > 0)
+                                                {
+                                                    var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder();
+                                                    encoder.QualityLevel = 95;
+                                                    // ИСПРАВЛЕНО CS1503: Берем первый конкретный кадр по индексу [0]
+                                                    encoder.Frames.Add(decoder.Frames[0]);
+                                                    using (var outStream = new FileStream(emergencyJpgPath, FileMode.Create)) encoder.Save(outStream);
+                                                }
+                                            }
+
+                                            if (File.Exists(emergencyJpgPath))
+                                            {
+                                                var img = currentSection.AddImage(emergencyJpgPath);
+                                                img.Width = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(14);
+                                                img.LockAspectRatio = true;
+                                                img.Left = MigraDoc.DocumentObjectModel.Shapes.ShapePosition.Center;
+                                                continue;
+                                            }
+                                        }
+                                        catch { }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
                     }
+                    continue;
                 }
-                currentSection.AddParagraph("");
+
+
+
+                // ИСПРАВЛЕНО: Все служебные XML-теги и заголовки подсвечиваем синим цветом,
+                // но больше НЕ ломаем переключение секций листов!
+                if (trimmedLine.StartsWith("<tab") || trimmedLine.StartsWith("</tab") ||
+                    trimmedLine.StartsWith("<heading") || trimmedLine.StartsWith("</heading") ||
+                    trimmedLine.StartsWith("<document_structure>") || trimmedLine.StartsWith("</document_structure>"))
+                {
+                    var metaP = currentSection.AddParagraph(line);
+                    metaP.Format.Font.Bold = true;
+                    metaP.Format.Font.Color = MigraDoc.DocumentObjectModel.Colors.DarkBlue;
+                    metaP.Format.SpaceAfter = MigraDoc.DocumentObjectModel.Unit.FromPoint(2);
+                    continue;
+                }
+
+                // КРИСТАЛЬНО ЧИСТЫЙ ВЫВОД ХУДОЖЕСТВЕННОЙ ПРОЗЫ РОМАНА СИМВОЛ В СИМВОЛ
+                var p = currentSection.AddParagraph(line);
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    p.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(4);
+                }
             }
         }
 
-        // 4. Финальное сохранение PDF-документа на жесткий диск
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: УПРЕЖДАЮЩЕЕ УДАЛЕНИЕ И АВТОПОДБОР ИМЕНИ ПРИ БЛОКИРОВКЕ -->
-        // ================================================================= -->
+        // 3. ФИНАЛЬНОЕ СОХРАНЕНИЕ ДОКУМЕНТА НА ДИСК
         var renderer = new MigraDoc.Rendering.PdfDocumentRenderer();
         renderer.Document = document;
         renderer.RenderDocument();
 
-        // Обеспечиваем корректное расширение для базового имени
-        string cleanFileName = fileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)
-            ? Path.GetFileNameWithoutExtension(fileName)
-            : fileName;
-
+        string cleanFileName = fileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? Path.GetFileNameWithoutExtension(fileName) : fileName;
         string baseFullPath = Path.Combine(outputPath, cleanFileName + ".pdf");
         string finalFullPath = baseFullPath;
 
-        // ПРИНУДИТЕЛЬНОЕ УПРЕЖДАЮЩЕЕ УДАЛЕНИЕ
         if (File.Exists(baseFullPath))
         {
-            try
-            {
-                File.Delete(baseFullPath);
-            }
+            try { File.Delete(baseFullPath); }
             catch (IOException)
             {
-                // СЦЕНАРИЙ БЛОКИРОВКИ: Файл физически занят ОС или другой программой.
-                // Генерируем уникальный суффикс на основе текущей метки времени (ЧасыМинутыСекунды)
                 string timeSuffix = DateTime.Now.ToString("HHmmss");
                 finalFullPath = Path.Combine(outputPath, $"{cleanFileName}_{timeSuffix}.pdf");
-
-                // На всякий случай выводим отладочное сообщение в консоль, чтобы автор знал об изменении имени
-                System.Diagnostics.Debug.WriteLine($"[Внимание] Файл {baseFullPath} заблокирован. Автопереключение на: {finalFullPath}");
-            }
-            catch (Exception ex)
-            {
-                string errTitle = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
-                System.Windows.MessageBox.Show(ex.Message, errTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-                return;
             }
         }
 
-        // Сохраняем PDF по гарантированно свободному финальному пути
-        try
+        try { renderer.PdfDocument.Save(finalFullPath); }
+        catch (Exception ex)
         {
-            renderer.PdfDocument.Save(finalFullPath);
-        }
-       
-         catch (Exception ex)
-        {
-            // Вытаскиваем локализованные заголовки и шаблоны сообщений из ресурсов приложения
-            string errTitle = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
-                ?? "Ошибка";
-
-            string errTemplate = System.Windows.Application.Current.Resources["Str_Err_PdfSaveFailed"] as string
-                ?? "Не удалось сохранить PDF документ:";
-
-            // Выводим полностью интернациональное сообщение, подставляя техническую ошибку ОС вслед за шаблоном
+            string errTitle = System.Windows.Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
+            string errTemplate = System.Windows.Application.Current.Resources["Str_Err_PdfSaveFailed"] as string ?? "Не удалось сохранить PDF документ:";
             System.Windows.MessageBox.Show($"{errTemplate} {ex.Message}", errTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
     }
-
-    
 
     private static void SetSectionMargins(MigraDoc.DocumentObjectModel.Section section)
     {

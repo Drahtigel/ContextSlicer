@@ -475,12 +475,29 @@
                                 VerticalContentAlignment="Center" HorizontalContentAlignment="Center"/>
                         </StackPanel>
 
+                        <!-- ================================================================= -->
+                        <!-- ИСПРАВЛЕНО: ТРИО ГЛОВБАЛЬНЫХ ЧЕКБОКСОВ НА ГЛАВНОЙ ФОРМЕ ПАНЕЛИ     -->
+                        <!-- ================================================================= -->
                         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,5,0">
-                            <CheckBox Content="{DynamicResource Str_IncludeStructure}" IsChecked="{Binding IncludeDirectoryStructure}" 
-                                  Foreground="{DynamicResource TextBrush}" FontSize="12" Margin="0,0,16,0" VerticalContentAlignment="Center"/>
-                            <CheckBox Content="{DynamicResource Str_Autosave}" IsChecked="{Binding IsAutoSaveEnabled}" 
-                                  Foreground="{DynamicResource TextBrush}" FontSize="12" VerticalContentAlignment="Center"/>
+                            <!-- 1. Структура каталогов -->
+                            <CheckBox Content="{DynamicResource Str_IncludeStructure}" 
+              IsChecked="{Binding IncludeDirectoryStructure}"
+              Foreground="{DynamicResource TextBrush}" FontSize="12" Margin="0,0,16,0"
+              VerticalContentAlignment="Center"/>
+
+                            <!-- 2. ИСПРАВЛЕНО: Чекбокс включения изображений на главной панели -->
+                            <CheckBox Content="{DynamicResource Str_IncludeImages}" 
+              IsChecked="{Binding IncludeImages}"
+              Foreground="{DynamicResource TextBrush}" FontSize="12" Margin="0,0,16,0"
+              VerticalContentAlignment="Center"/>
+
+                            <!-- 3. Автосохранение -->
+                            <CheckBox Content="{DynamicResource Str_Autosave}" 
+              IsChecked="{Binding IsAutoSaveEnabled}"
+              Foreground="{DynamicResource TextBrush}" FontSize="12"
+              VerticalContentAlignment="Center"/>
                         </StackPanel>
+
                     </Grid>
 
                     <!-- СТРОКА 1: УПРАВЛЕНИЕ МОДУЛЯМИ -->

@@ -126,5 +126,7 @@
     <system:String x:Key="Str_Title_Warning">Warning</system:String>
     <system:String x:Key="Str_Err_FileLocked">Failed to overwrite the file. Please close the PDF document in other applications and try again.</system:String>
     <system:String x:Key="Str_Err_PdfSaveFailed">Failed to save the PDF document:</system:String>
+    <system:String x:Key="Str_IncludeImages">Include images in PDF</system:String>
+    <system:String x:Key="Str_Err_ModuleDuplicate">A module with this name already exists in this project!</system:String>
 
 </ResourceDictionary>

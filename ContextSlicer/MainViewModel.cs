@@ -10,6 +10,7 @@ using PdfSharp.Fonts;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -62,6 +63,8 @@ public partial class MainViewModel : ObservableObject
     // Редактирование названия модуля
     [ObservableProperty] private bool _isEditOverlayVisible;
     [ObservableProperty] private string _editModuleNameInput = string.Empty;
+    [ObservableProperty] private bool _editProjectIncludeImagesInput;
+    [ObservableProperty] private bool _includeImages;
     // Одна универсальная команда для контекстного меню TreeView
     [CommunityToolkit.Mvvm.Input.RelayCommand]
     private void AddNodeToFilters(FileSystemNode? node)
@@ -322,6 +325,8 @@ public partial class MainViewModel : ObservableObject
     partial void OnModuleRulesChanged(string value) => _ = RecalculateContextSizeAsync();
     // Автоматический пересчет токенов при клике на чекбокс структуры каталогов
     partial void OnIncludeDirectoryStructureChanged(bool value) => _ = RecalculateContextSizeAsync();
+    // Автоматический пересчет токенов при включении/выключении картинок на форме
+    partial void OnIncludeImagesChanged(bool value) => _ = RecalculateContextSizeAsync();
 
 
     [RelayCommand]
@@ -423,6 +428,7 @@ public partial class MainViewModel : ObservableObject
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
             PromptRules = value.PromptRules;
+            IncludeImages = value.IncludeImages;
             IncludeDirectoryStructure = value.IncludeDirectoryStructure;
 
             Modules = new ObservableCollection<ContextModule>(value.Modules);
@@ -710,28 +716,38 @@ public partial class MainViewModel : ObservableObject
         SilentSave();
     }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: БЕЗОПАСНОЕ СОЗДАНИЕ МОДУЛЯ БЕЗ СБРОСА ВЫДЕЛЕНИЯ UI    -->
+    // ================================================================= -->
     [RelayCommand]
     private void CreateNewModule()
     {
         if (SelectedProject == null)
         {
-            System.Windows.MessageBox.Show("Сначала выберите или создайте проект!", "Внимание",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            // Вытаскиваем мультиязычные ресурсы из Strings.ru.xaml / Strings.en.xaml
+            string selectProjMsg = System.Windows.Application.Current.Resources["Str_ProjNotSelected"] as string
+                ?? "Сначала выберите или создайте проект!";
+            string warnTitle = System.Windows.Application.Current.Resources["Str_Title_Warning"] as string
+                ?? "Внимание";
+
+            System.Windows.MessageBox.Show(selectProjMsg, warnTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
             return;
         }
 
-        // Читаем имя из ИЗОЛИРОВАННОГО поля ввода нового модуля
         string name = string.IsNullOrWhiteSpace(NewModuleNameInput)
             ? $"Модуль {Modules.Count + 1}"
             : NewModuleNameInput.Trim();
 
-        bool isDuplicate = SelectedProject.Modules.Any(m =>
-            m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
-
+        bool isDuplicate = SelectedProject.Modules.Any(m => m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (isDuplicate)
         {
-            System.Windows.MessageBox.Show($"Модуль с названием \"{name}\" уже существует в этом проекте!", "Внимание",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            // Вытаскиваем шаблон сообщения об ошибке дубликата из ресурсов
+            string duplicateMsg = System.Windows.Application.Current.Resources["Str_Err_ModuleDuplicate"] as string
+                ?? "Модуль с таким названием уже существует в этом проекте!";
+            string warnTitle = System.Windows.Application.Current.Resources["Str_Title_Warning"] as string
+                ?? "Внимание";
+
+            System.Windows.MessageBox.Show(duplicateMsg, warnTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
             return;
         }
 
@@ -743,23 +759,25 @@ public partial class MainViewModel : ObservableObject
             CheckedEntries = new List<SyntaxEntry>()
         };
 
+        // Замораживаем UI триггеры, чтобы избежать циклической перезаписи полей
         _isUpdatingFields = true;
         try
         {
+            // Добавляем строго в коллекцию текущего проекта
             SelectedProject.Modules.Add(newModule);
             Modules.Add(newModule);
 
-            // Полностью пересоздаем корень дерева файлов для изоляции памяти
+            // Пересоздаем технический корень для изоляции дерева
             RootNode = new FileSystemNode
             {
                 Name = System.IO.Path.GetFileName(SelectedProject.RootPath),
                 FullPath = SelectedProject.RootPath,
                 IsFile = false
             };
+
             OnPropertyChanged(nameof(RootNode));
             RefreshTreeView(new List<string>());
 
-            // ОЧИЩАЕМ ИЗОЛИРОВАННОЕ ПОЛЕ. Теперь это никак не затронет ComboBox!
             NewModuleNameInput = string.Empty;
         }
         finally
@@ -767,14 +785,19 @@ public partial class MainViewModel : ObservableObject
             _isUpdatingFields = false;
         }
 
-        // Мягко переключаем фокус в UI-потоке
+        // ИСПРАВЛЕНО: Переключаем фокус на новый модуль на следующем такте UI
         System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
         {
             SelectedModule = newModule;
         }), System.Windows.Threading.DispatcherPriority.Background);
 
-        SilentSave();
+        // ИСПРАВЛЕНО: Вызываем АВТОНОМНЫЙ метод Save у нашего объекта конфигурации, 
+        // не трогая коллекцию 'Projects' в MainViewModel и защищая ListBox от сброса!
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+        SelectedProject.Save(targetDir);
     }
+
 
     // public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
 
@@ -900,15 +923,23 @@ public partial class MainViewModel : ObservableObject
     // ================================================================= -->
     // ИСПРАВЛЕНО: ИЗОЛИРОВАННОЕ СОХРАНЕНИЕ ТЕКУЩЕГО ПРОЕКТА В СВОЙ JSON -->
     // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АТОМАРНОЕ СОХРАНЕНИЕ БЕЗ СБРОСА ВЫДЕЛЕНИЯ И ФОКУСА UI -->
+    // ================================================================= -->
     private void ExecuteSave(bool showMessage)
     {
-        if (SelectedProject == null)
+        // 1. Фиксируем ссылку на текущий выбранный проект в локальной переменной.
+        // Это на 100% защищает нас от NullReferenceException при закрытии окна WPF!
+        var currentProject = SelectedProject;
+
+        if (currentProject == null)
         {
             if (!string.IsNullOrWhiteSpace(ProjectNameInput))
             {
                 var autoProject = new ProjectConfig { ProjectName = ProjectNameInput.Trim() };
                 Projects.Add(autoProject);
                 SelectedProject = autoProject;
+                currentProject = autoProject;
             }
             else
             {
@@ -924,11 +955,16 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // Синхронизация текущего выбранного модуля с UI-нодами дерева перед сохранением
-        if (SelectedModule != null && RootNode != null)
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ МОДУЛЯ БЕЗ СБРОСА И ВЫПАДЕНИЯ COMBOBOX  -->
+        // ================================================================= -->
+        // 2. Синхронизируем состояние выбранного модуля с UI-нодами дерева перед записью
+        var currentModule = SelectedModule; // Фиксируем локальную ссылку на модуль
+
+        if (currentModule != null && RootNode != null)
         {
             var checkedFilesList = new List<string>();
-            bool isTextProject = SelectedProject.Type == ProjectType.GoogleDoc || SelectedProject.Type == ProjectType.WordDoc;
+            bool isTextProject = currentProject.Type == ProjectType.GoogleDoc || currentProject.Type == ProjectType.WordDoc;
 
             if (!isTextProject)
             {
@@ -947,76 +983,81 @@ public partial class MainViewModel : ObservableObject
             foreach (var node in flatSyntaxList)
             {
                 string effFilePath = isTextProject ? string.Empty : node.RelativePath;
-                string cleanEntryPath = node.EntryPath;
                 checkedEntriesList.Add(new SyntaxEntry
                 {
                     FilePath = effFilePath,
-                    EntryPath = cleanEntryPath,
+                    EntryPath = node.EntryPath,
                     DisplayName = node.Name,
                     Type = node.SyntaxType,
                     SpanInfo = node.SyntaxSpanInfo
                 });
             }
 
-            SelectedModule.ModuleName = ModuleNameInput;
-            SelectedModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
-            SelectedModule.ModuleRules = ModuleRules;
-            SelectedModule.CheckedFiles = checkedFilesList;
-            SelectedModule.CheckedEntries = checkedEntriesList;
+            // Обновляем свойства локального объекта напрямую в памяти
+            currentModule.ModuleName = ModuleNameInput;
+            currentModule.ContextFileName = GetSafeFileName(ModuleNameInput) + ".txt";
+            currentModule.ModuleRules = ModuleRules;
+            currentModule.CheckedFiles = checkedFilesList;
+            currentModule.CheckedEntries = checkedEntriesList;
 
-            var mIdx = Modules.IndexOf(SelectedModule);
-            if (mIdx >= 0) Modules[mIdx] = SelectedModule;
+            // ЖЕСТКОЕ ТАБУ: Мы БОЛЬШЕ НЕ пишем Modules[mIdx] = SelectedModule!
+            // Благодаря этому ComboBox больше не теряет выделенный модуль при сохранении.
         }
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: АТОМАРНАЯ ФИКСАЦИЯ ССЫЛКИ ДЛЯ ЗАЩИТЫ ОТ CLOSE-NULL     -->
-        // ================================================================= -->
-        // Фиксируем ссылку на объект в локальной переменной на входе
-        var currentProject = SelectedProject;
-        if (currentProject == null) return; // Если проект УЖЕ null — выходим сразу
 
-        // Обновляем метаданные, обращаясь СТРОГО к локальной безопасной копии currentProject
+        // 3. Обновляем метаданные СТРОГО внутри локального объекта currentProject
         currentProject.ProjectName = ProjectNameInput.Trim();
         currentProject.RootPath = RootPath;
         currentProject.OutputPath = OutputPath;
         currentProject.PromptRules = PromptRules;
         currentProject.IncludeDirectoryStructure = IncludeDirectoryStructure;
+
+        // НАДЁЖНО ФИКСИРУЕМ ГАЛОЧКУ ИЗОБРАЖЕНИЙ С ГЛАВНОЙ ФОРМЫ НАПРЯМУЮ!
+        currentProject.IncludeImages = IncludeImages;
+
         currentProject.Modules = Modules.ToList();
 
-        var pIdx = Projects.IndexOf(currentProject);
-        if (pIdx >= 0)
+        // ЖЕСТКОЕ ТАБУ: Мы БОЛЬШЕ НЕ пишем Projects[pIdx] = SelectedProject!
+        // Благодаря этому ListBox больше не сбрасывает фокус в -1 и проект не исчезает!
+
+        try
         {
-            Projects[pIdx] = currentProject;
+            // Вычисляем путь к папке app_data/ContextSlicer/projects/
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+
+            // Вызываем инкапсулированный метод сохранения самого объекта конфигурации
+            bool isSaved = currentProject.Save(targetDir);
+
+            if (isSaved)
+            {
+                if (showMessage)
+                {
+                    string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
+                        ?? "Настройки проекта успешно сохранены.";
+                    string successTitle = Application.Current.Resources["Str_Title_Success"] as string
+                        ?? "Успех";
+                    System.Windows.MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            else if (showMessage)
+            {
+                string errorPrefix = Application.Current.Resources["Str_ItemSaveError"] as string
+                    ?? "Ошибка сохранения файла проекта";
+                string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
+                    ?? "Ошибка";
+                System.Windows.MessageBox.Show(errorPrefix, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
-
-        // Вычисляем путь к папке сохранения app_data/ContextSlicer/projects/
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
-
-        // ИСПРАВЛЕНО: Вызываем метод Save у локального объекта currentProject, который гарантированно не null!
-        bool isSaved = currentProject.Save(targetDir);
-
-        if (isSaved)
+        catch (Exception ex)
         {
             if (showMessage)
             {
-                string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
-                    ?? "Настройки проекта успешно сохранены.";
-                string successTitle = Application.Current.Resources["Str_Title_Success"] as string
-                    ?? "Успех";
-                System.Windows.MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+                string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
+                System.Windows.MessageBox.Show(ex.Message, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
-        else if (showMessage)
-        {
-            string errorPrefix = Application.Current.Resources["Str_ItemSaveError"] as string
-                ?? "Ошибка сохранения файла проекта";
-            string errorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string
-                ?? "Ошибка";
-            System.Windows.MessageBox.Show(errorPrefix, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
-        }
     }
-
 
     // Вспомогательный метод для глубокой очистки синтаксических нод
     private void ClearSyntaxNodesRecursive(FileSystemNode node)
@@ -1064,17 +1105,15 @@ public partial class MainViewModel : ObservableObject
         return true;
     }
     // ================================================================= -->
-    // ИСПРАВЛЕНО: ЖЕЛЕЗНОЕ ФИЗИЧЕСКОЕ УДАЛЕНИЕ ИЗОЛИРОВАННОГО JSON     -->
+    // ИСПРАВЛЕНО: ТОТАЛЬНОЕ УДАЛЕНИЕ ПРОЕКТА И ЕГО ЛОКАЛЬНОГО КЭША GDOC  -->
     // ================================================================= -->
     [RelayCommand]
     private void DeleteProject(ProjectConfig? project)
     {
-        // ИСПРАВЛЕНО: Если команда вызвана из контекстного меню, параметр 'project' 
-        // гарантированно содержит именно ту строку, на которую кликнули!
         var targetProject = project ?? SelectedProject;
         if (targetProject == null) return;
 
-        // Запрашиваем мультиязычное подтверждение удаления
+        // Считываем мультиязычные строки подтверждения
         string confirmTemplate = Application.Current.Resources["Str_Msg_ConfirmDeleteProj"] as string
             ?? "Вы уверены, что хотите полностью удалить проект \"{0}\" и все его модули?";
         string confirmMsg = string.Format(confirmTemplate, targetProject.ProjectName);
@@ -1085,17 +1124,33 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
-                // Вычисляем точный физический путь к файлу проекта в папке %AppData%
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                 string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
 
-                // Очищаем имя в точности так же, как это делает метод ProjectConfig.Save
+                // 1. ОЧИСТКА ГЛОБАЛЬНОГО КЭША GOOGLE DOCS (ЕСЛИ ЭТО ЛИТЕРАТУРНЫЙ ПРОЕКТ)
+                if (targetProject.Type == ProjectType.GoogleDoc && !string.IsNullOrWhiteSpace(targetProject.RootPath))
+                {
+                    // Вытаскиваем уникальный ID документа из ссылки RootPath
+                    string googleDocId = GoogleDownloader.ExtractDocumentId(targetProject.RootPath);
+                    if (!string.IsNullOrEmpty(googleDocId))
+                    {
+                        string googleCachePath = Path.Combine(baseDir, "googlecache", $"{googleDocId}.json");
+
+                        // Безопасно стираем файл кэша, если он физически существует на диске
+                        if (File.Exists(googleCachePath))
+                        {
+                            File.Delete(googleCachePath);
+                            System.Diagnostics.Debug.WriteLine($"[Кэш Очищен] Удален файл кэша Google Docs: {googleCachePath}");
+                        }
+                    }
+                }
+
+                // 2. ФИЗИЧЕСКОЕ УДАЛЕНИЕ ФАЙЛА КОНФИГУРАЦИИ ПРОЕКТА
                 string safeName = string.Concat(targetProject.ProjectName.Split(Path.GetInvalidFileNameChars())).Trim();
                 if (string.IsNullOrWhiteSpace(safeName)) safeName = "UntitledProject";
-
                 string projectFilePath = Path.Combine(targetDir, $"{safeName}.json");
 
-                // ПРИНУДИТЕЛЬНОЕ УДАЛЕНИЕ С ДИСКА
                 if (File.Exists(projectFilePath))
                 {
                     File.Delete(projectFilePath);
@@ -1103,8 +1158,7 @@ public partial class MainViewModel : ObservableObject
                 }
                 else
                 {
-                    // Подстраховка на случай, если проект был переименован на лету в UI:
-                    // Пробуем найти файл в папке по точному совпадению внутренней структуры, если имя файла разошлось
+                    // Фолбэк на случай расхождения имен файлов при переименовании в рантайме
                     var allFiles = Directory.GetFiles(targetDir, "*.json");
                     foreach (var file in allFiles)
                     {
@@ -1119,7 +1173,7 @@ public partial class MainViewModel : ObservableObject
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Delete Project File Error] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Delete Project Critical Error] {ex.Message}");
             }
 
             // Вычищаем проект из оперативной памяти и коллекции интерфейса ListBox
@@ -1133,17 +1187,17 @@ public partial class MainViewModel : ObservableObject
             // Автоматически переключаем фокус на оставшийся проект
             if (Projects.Count > 0)
             {
-                SelectedProject = Projects[0];
+                SelectedProject = Projects.FirstOrDefault();
             }
             else
             {
-                // Если проектов больше нет — полностью очищаем дерево UI
                 RootNode = null;
                 Modules.Clear();
                 OnPropertyChanged(nameof(DisplayProjectName));
             }
         }
     }
+
 
     // ================================================================= -->
     // ИСПРАВЛЕНО: ПЕРЕИМЕНОВАНИЕ ФАЙЛА ПРОЕКТА И СТИРАНИЕ СТАРОЙ ВЕРСИИ -->
@@ -1495,18 +1549,24 @@ public partial class MainViewModel : ObservableObject
             string fullPath = Path.Combine(OutputPath, safeFileName);
             if (IsPdfFormat)
             {
-                // Внутри метода GenerateContext() в MainViewModel.cs:
+
+                // ================================================================= -->
+                // ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ АРГУМЕНТОВ С РОДНЫМИ СВОЙСТВАМИ VIEWMODEL -->
+                // ================================================================= -->
+                // Вызываем расширенную версию метода, соблюдая строгую последовательность параметров из ContextBuilderService
                 await ContextBuilderService.GeneratePdfContextFileAsync(
-                    OutputPath,
-                    safeFileName,
-                    PromptRules,
-                    ModuleRules,
-                    IncludeDirectoryStructure,
-                    RootNode,
-                    SelectedModule.CheckedEntries,
-                    progressHandler,
-                    SelectedProject?.Type ?? ProjectType.Folder, // <-- ДОБАВЛЯЕМ ТОЛЬКО ЭТОТ ПАРАМЕТР ИЗ CONFIG!
-                    _cts.Token);
+                    OutputPath,                         // 1. Папка вывода
+                    safeFileName,                       // 2. Имя файла
+                    PromptRules,                        // 3. Общие правила проекта
+                    ModuleRules,                        // 4. Локальные правила модуля
+                    IncludeDirectoryStructure,          // 5. Флаг структуры оглавления
+                    IncludeImages,                      // 6. Флаг включения картинок с главной панели
+                    RootNode,                           // 7. Корневой узел дерева UI
+                    SelectedModule.CheckedEntries,      // 8. ИСПРАВЛЕНО CS0103: Твое родное свойство чекнутых синтаксических узлов!
+                    progressHandler,                    // 9. ИСПРАВЛЕНО CS0103: Твоя родная локальная переменная прогресс-бара!
+                    SelectedProject?.Type ?? ProjectType.Folder, // 10. Тип проекта (Книга/Код)
+                    _cts.Token);                        // 11. Токен отмены операции
+
 
             }
             else
@@ -2071,6 +2131,8 @@ public partial class MainViewModel : ObservableObject
         targetProject.Type = selectedType;
         IsProjectOverlayVisible = false;
         SelectedProject = targetProject;
+        targetProject.IncludeImages = EditProjectIncludeImagesInput;
+        IncludeImages = EditProjectIncludeImagesInput;
 
         RefreshTreeView(targetProject.Modules.FirstOrDefault()?.CheckedFiles ?? new List<string>());
         SilentSave();
@@ -2125,6 +2187,7 @@ public partial class MainViewModel : ObservableObject
         EditProjectNameInput = SelectedProject.ProjectName;
         EditProjectRootPathInput = SelectedProject.RootPath;
         EditProjectOutputPathInput = SelectedProject.OutputPath;
+        EditProjectIncludeImagesInput = SelectedProject.IncludeImages;
 
         IsLocalFolderSelected = (SelectedProject.Type == ProjectType.Folder);
         IsGoogleDocSelected = (SelectedProject.Type == ProjectType.GoogleDoc);

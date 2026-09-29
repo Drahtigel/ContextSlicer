@@ -127,5 +127,7 @@
     <system:String x:Key="Str_Title_Warning">Внимание</system:String>
     <system:String x:Key="Str_Err_FileLocked">Не удалось перезаписать файл. Пожалуйста, закройте PDF-документ в сторонних программах и повторите попытку.</system:String>
     <system:String x:Key="Str_Err_PdfSaveFailed">Не удалось сохранить PDF документ:</system:String>
+    <system:String x:Key="Str_IncludeImages">Включать изображения в PDF</system:String>
+    <system:String x:Key="Str_Err_ModuleDuplicate">Модуль с таким названием уже существует в этом проекте!</system:String>
 
 </ResourceDictionary>

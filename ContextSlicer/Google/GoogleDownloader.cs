@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
@@ -40,7 +42,9 @@ public class GoogleDownloader
         return false;
     }
 
-    // ОБНОВЛЕНО: Теперь в третий аргумент передается путь к скачанному JSON-файлу ключа
+    /// <summary>
+    /// Выполняет скачивание структуры документа и всех вложенных бинарных потоков изображений
+    /// </summary>
     public async Task<bool> DownloadToCacheAsync(string url, string projectLocation, string authJsonPath)
     {
         string docId = ExtractDocumentId(url);
@@ -59,17 +63,15 @@ public class GoogleDownloader
             var creds = JObject.Parse(credentialsText);
             string clientEmail = creds["client_email"]?.ToString() ?? string.Empty;
             string privateKeyRaw = creds["private_key"]?.ToString() ?? string.Empty;
-
             if (string.IsNullOrEmpty(clientEmail) || string.IsNullOrEmpty(privateKeyRaw)) return false;
 
-            // 2. ПОЛУЧАЕМ ACCESS TOKEN ЧЕРЕЗ JWT (Автономная реализация без внешних библиотек)
+            // 2. ПОЛУЧАЕМ ACCESS TOKEN ЧЕРЕЗ JWT
             string accessToken = await GetGoogleAccessTokenAsync(clientEmail, privateKeyRaw);
             if (string.IsNullOrEmpty(accessToken)) return false;
 
-            // 3. СКАЧИВАЕМ ДОКУМЕНТ С ОФИЦИАЛЬНЫМ ТОКЕНОМ АВТОРИЗАЦИИ
-            // ИСПРАВЛЕНО: Сборка канонического адреса Docs API по частям без использования слэшей в строке
-            var request = new HttpRequestMessage(HttpMethod.Get, "https" + ":" + "//" + "docs" + "." + "googleapis" + "." + "com" + "/" + "v1" + "/" + "documents" + "/" + docId+ "?includeTabsContent=true");
-
+            // 3. СКАЧИВАЕМ СТРУКТУРУ ДОКУМЕНТА (Разбиваем URL во избежание зажёвывания фильтром)
+            string docApiUrl = "https" + ":" + "//" + "docs" + "." + "googleapis" + "." + "com" + "/" + "v1" + "/" + "documents" + "/" + docId + "?includeTabsContent=true";
+            var request = new HttpRequestMessage(HttpMethod.Get, docApiUrl);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
             var response = await _httpClient.SendAsync(request);
@@ -84,7 +86,47 @@ public class GoogleDownloader
             var docStructure = JObject.Parse(jsonResponse);
             if (docStructure["documentId"] == null) return false;
 
-            // Сохраняем структуру и обновляем время жизни кэша
+            // 4. ИЗВЛЕКАЕМ ВСЕ ИЗОБРАЖЕНИЯ ИЗ ИЕРАРХИИ ДОКУМЕНТА В КОЛЛЕКЦИЮ
+            var imageMap = ExtractInlineObjects(docStructure);
+
+            // 5. ПОСЛЕДОВАТЕЛЬНО СКАЧИВАЕМ КАЖДЫЙ БИНАРНЫЙ ФАЙЛ НА ДИСК
+            if (imageMap.Count > 0)
+            {
+                string imagesDir = Path.Combine(cacheDir, "images", docId);
+                if (!Directory.Exists(imagesDir)) Directory.CreateDirectory(imagesDir);
+
+                foreach (var imgPair in imageMap)
+                {
+                    string objectId = imgPair.Key;
+                    string contentUri = imgPair.Value;
+
+                    try
+                    {
+                        var imgRequest = new HttpRequestMessage(HttpMethod.Get, contentUri);
+                        imgRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+                        var imgResponse = await _httpClient.SendAsync(imgRequest);
+                        if (imgResponse.IsSuccessStatusCode)
+                        {
+                            byte[] imageBytes = await imgResponse.Content.ReadAsByteArrayAsync();
+
+                            // Вызываем нашу новую изолированную функцию определения формата
+                            string ext = DetectImageExtension(imageBytes);
+
+                            // Сохраняем файл на диск под его честным расширением (.jpg для Беатрис!)
+                            string imgFullPath = Path.Combine(imagesDir, $"{objectId}{ext}");
+                            await File.WriteAllBytesAsync(imgFullPath, imageBytes);
+                        }
+
+                    }
+                    catch (Exception imgEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Скачивание Сбой] {objectId}: {imgEx.Message}");
+                    }
+                }
+            }
+
+            // Сохраняем структуру JSON и обновляем время жизни кэша
             await File.WriteAllTextAsync(cacheFilePath, jsonResponse);
             await File.WriteAllTextAsync(metaFilePath, DateTime.Now.ToString("o"));
             return true;
@@ -95,6 +137,110 @@ public class GoogleDownloader
             return false;
         }
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ИЗОЛИРОВАННЫЙ СИГНАТУРНЫЙ АНАЛИЗАТОР ФОРМАТА ФАЙЛА    -->
+    // ================================================================= -->
+    /// <summary>
+    /// Анализирует первые байты (магические числа) файла или массива данных
+    /// и возвращает истинное системное расширение (.jpg, .png, .webp).
+    /// </summary>
+    public static string DetectImageExtension(byte[] headerBytes)
+    {
+        if (headerBytes == null || headerBytes.Length < 4)
+        {
+            return ".png"; // Расширение по умолчанию при нехватке данных
+        }
+
+        // 1. JPEG Сигнатура: FF D8 FF
+        if (headerBytes[0] == 0xFF && headerBytes[1] == 0xD8 && headerBytes[2] == 0xFF)
+        {
+            return ".jpg";
+        }
+
+        // 2. WebP Сигнатура: Первые 4 байта соответствуют контейнеру "RIFF"
+        if (headerBytes[0] == 0x52 && headerBytes[1] == 0x49 && headerBytes[2] == 0x46 && headerBytes[3] == 0x46)
+        {
+            return ".webp";
+        }
+
+        // 3. PNG Сигнатура: 89 50 4E 47
+        if (headerBytes[0] == 0x89 && headerBytes[1] == 0x50 && headerBytes[2] == 0x4E && headerBytes[3] == 0x47)
+        {
+            return ".png";
+        }
+
+        return ".png"; // Фолбэк-вариант для неопознанных потоков
+    }
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: РЕКУРСИВНЫЙ ГЛУБОКИЙ СБОР INLINEOBJECTS ИЗ ВСЕХ ВКЛАДОК -->
+    // ================================================================= -->
+    private static Dictionary<string, string> ExtractInlineObjects(JObject docStructure)
+    {
+        var result = new Dictionary<string, string>();
+
+        // 1. Проверяем корень документа (на случай старого плоского формата без вкладок)
+        if (docStructure["inlineObjects"] is JObject rootInlineObjects)
+        {
+            ParseInlineObjectsMap(rootInlineObjects, result);
+        }
+
+        // 2. Запускаем честный рекурсивный обход дерева вкладок для Tabs API
+        if (docStructure["tabs"] is JArray tabsArray)
+        {
+            foreach (var tabToken in tabsArray)
+            {
+                FindInlineObjectsRecursive(tabToken, result);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// РЕКУРСИВНОЕ ЯДРО: Спускается на любую глубину дерева childTabs и вытаскивает inlineObjects
+    /// </summary>
+    private static void FindInlineObjectsRecursive(JToken tabToken, Dictionary<string, string> targetDict)
+    {
+        if (tabToken == null) return;
+
+        // Если у текущей ноды есть documentTab — забираем её карту картинок
+        if (tabToken["documentTab"]?["inlineObjects"] is JObject tabInlineObjects)
+        {
+            ParseInlineObjectsMap(tabInlineObjects, targetDict);
+        }
+
+        // МАТЕМАТИЧЕСКИ ЧИСТО: Если есть вложенные подвкладки — пускаем рекурсию вглубь!
+        if (tabToken["childTabs"] is JArray childTabsArray)
+        {
+            foreach (var childTab in childTabsArray)
+            {
+                FindInlineObjectsRecursive(childTab, targetDict);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Вспомогательный метод парсинга карты картинок: строго извлекает контент по свойствам Newtonsoft
+    /// </summary>
+    private static void ParseInlineObjectsMap(JObject inlineObjectsMap, Dictionary<string, string> targetDict)
+    {
+        foreach (var property in inlineObjectsMap.Properties())
+        {
+            string objectId = property.Name;
+
+            var inlineObj = property.Value as JObject;
+            if (inlineObj == null) continue;
+
+            var embeddedObject = inlineObj["inlineObjectProperties"]?["embeddedObject"];
+            string contentUri = embeddedObject?["imageProperties"]?["contentUri"]?.ToString() ?? string.Empty;
+
+            if (!string.IsNullOrEmpty(contentUri) && !targetDict.ContainsKey(objectId))
+            {
+                targetDict[objectId] = contentUri;
+            }
+        }
+    }
 
     // Вспомогательный метод генерации OAuth2 токена на основе RSA-подписи ключа
     private async Task<string> GetGoogleAccessTokenAsync(string clientEmail, string privateKeyRaw)
@@ -103,14 +249,11 @@ public class GoogleDownloader
         {
             // Формируем стандартные JSON-блоки для JWT Claims по спецификации Google
             var now = (int)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
-
             var header = new JObject { ["alg"] = "RS256", ["typ"] = "JWT" };
             var payload = new JObject
             {
                 ["iss"] = clientEmail,
-                // ИСПРАВЛЕНО: Полный корректный scope доступа к документам
                 ["scope"] = "https" + ":" + "//" + "www" + "." + "googleapis" + "." + "com" + "/" + "auth" + "/" + "documents" + "." + "readonly",
-                // ИСПРАВЛЕНО: Точный адресaud, совпадающий с адресом отправки POST-запроса токена
                 ["aud"] = "https" + ":" + "//" + "oauth2" + "." + "googleapis" + "." + "com" + "/" + "token",
                 ["exp"] = now + 3600,
                 ["iat"] = now
@@ -135,7 +278,6 @@ public class GoogleDownloader
                 rsa.ImportPkcs8PrivateKey(privateKeyBytes, out _);
                 byte[] inputBytes = System.Text.Encoding.UTF8.GetBytes(assertionInput);
                 byte[] signatureBytes = rsa.SignData(inputBytes, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
-
                 string signature = Convert.ToBase64String(signatureBytes).Replace("+", "-").Replace("/", "_").Replace("=", "");
                 string jwtToken = $"{assertionInput}.{signature}";
 
@@ -148,7 +290,6 @@ public class GoogleDownloader
 
                 var content = new FormUrlEncodedContent(dict);
                 var tokenResponse = await _httpClient.PostAsync("https" + ":" + "//" + "oauth2" + "." + "googleapis" + "." + "com" + "/" + "token", content);
-
                 if (!tokenResponse.IsSuccessStatusCode) return string.Empty;
 
                 string tokenJson = await tokenResponse.Content.ReadAsStringAsync();
@@ -161,5 +302,4 @@ public class GoogleDownloader
             return string.Empty;
         }
     }
-
 }

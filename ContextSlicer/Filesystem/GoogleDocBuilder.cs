@@ -22,34 +22,9 @@ namespace ContextSlicer.Filesystem
         public string DocTitle { get; set; } = string.Empty;
         public List<DocEntry> ChildEntries { get; set; } = new List<DocEntry>();
 
-        public string BuildStructureMarkdown()
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine("=== СТРУКТУРА ВЫБРАННОГО ЛИТЕРАТУРНОГО КОНТЕКСТА ===");
-            sb.AppendLine("<document_structure>");
+        // ИСПРАВЛЕНО: Явное свойство конфигурации картинок для корневого документа
+        public bool IncludeImages { get; set; } = false;
 
-            // Передаем пустую строку для элементов самого верхнего уровня (уровень 0)
-            foreach (var child in ChildEntries)
-            {
-                child.RenderStructureRecursive(sb, "");
-            }
-
-            sb.AppendLine("</document_structure>\n");
-            return sb.ToString();
-        }
-
-
-        public string BuildContentText()
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine("=== СОДЕРЖИМОЕ ВЫБРАННЫХ РАЗДЕЛОВ ===");
-            foreach (var child in ChildEntries) child.RenderContentRecursive(sb, "");
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Строит иерархическое C#-дерево на основе оригинальной структуры JSON-кэша Google Docs
-        /// </summary>
         public void FromJson(string jsonContent, List<SyntaxEntry> savedEntries)
         {
             if (string.IsNullOrWhiteSpace(jsonContent) || savedEntries == null || savedEntries.Count == 0) return;
@@ -57,23 +32,57 @@ namespace ContextSlicer.Filesystem
             var docJson = JObject.Parse(jsonContent);
             this.DocTitle = docJson["title"]?.ToString() ?? "Без названия";
 
-            // Скан по глобальным вкладкам верхнего уровня
             if (docJson["tabs"] is JArray tabsArray)
             {
                 foreach (var tabToken in tabsArray)
                 {
-                    var entry = DocEntry.BuildEntryRecursive(tabToken, savedEntries, "");
+                    // Передаем флаг IncludeImages во внутренний рекурсивный фабричный метод
+                    var entry = DocEntry.BuildEntryRecursive(tabToken, savedEntries, "", this.IncludeImages);
                     if (entry != null) this.ChildEntries.Add(entry);
                 }
             }
-            // Скан по плоскому телу документа, если вкладок нет
             else if (docJson["body"]?["content"] is JArray contentArray)
             {
-                var entry = DocEntry.BuildEntryRecursive(docJson, savedEntries, "");
+                var entry = DocEntry.BuildEntryRecursive(docJson, savedEntries, "", this.IncludeImages);
                 if (entry != null) this.ChildEntries.Add(entry);
             }
         }
+
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: МЕТОДЫ ВЫВОДА СТРУКТУРЫ И КОНТЕНТА ДЛЯ КЛАССА ROOTDOC -->
+        // ================================================================= -->
+        /// <summary>
+        /// Генерирует XML-структуру оглавления по готовому дереву объектов
+        /// </summary>
+        public string BuildStructureMarkdown()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== СТРУКТУРА ВЫБРАННОГО ЛИТЕРАТУРНОГО КОНТЕКСТА ===");
+            sb.AppendLine("<document_structure>");
+            foreach (var child in ChildEntries)
+            {
+                child.RenderStructureRecursive(sb, "");
+            }
+            sb.AppendLine("</document_structure>\n");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Собирает монолитное текстовое полотно книги с тегами разметки
+        /// </summary>
+        public string BuildContentText()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== СОДЕРЖИМОЕ ВЫБРАННЫХ РАЗДЕЛОВ ===");
+            foreach (var child in ChildEntries)
+            {
+                child.RenderContentRecursive(sb, "");
+            }
+            return sb.ToString();
+        }
+
     }
+
 
     public class DocEntry
     {
@@ -84,12 +93,6 @@ namespace ContextSlicer.Filesystem
         public int HeadingLevel { get; set; } = 0; // 0 для вкладок, 1-6 для HEADING_
         public List<DocEntry> ChildEntries { get; set; } = new List<DocEntry>();
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ГАРАНТИРОВАННОЕ ДЕРЕВО ОГЛАВЛЕНИЯ ПРЯМО ПО DOCENTRY    -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: СТРОГОЕ ГРАФИЧЕСКОЕ ДЕРЕВО ОГЛАВЛЕНИЯ ПО КОРНЮ ДАННЫХ -->
-        // ================================================================= -->
         public void RenderStructureRecursive(StringBuilder sb, string indent)
         {
             // Префикс "[Вкладка]" пишется ТОЛЬКО для корневых вкладок самого верхнего уровня (где indent пустой)
@@ -107,20 +110,34 @@ namespace ContextSlicer.Filesystem
         }
 
 
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: КОРРЕКТНЫЙ РЕНДЕРИНГ КОНТЕНТА УЗЛОВ С МАРКЕРАМИ КАРТИНОК -->
+        // ================================================================= -->
         public void RenderContentRecursive(StringBuilder sb, string indent)
         {
+            // Определяем имя XML-тега на основе реального системного типа узла
             string tagName = Type == DocEntryType.Tab ? "tab" : "heading";
+
+            // Пишем открывающий тег с путём для разметки
             sb.AppendLine($"{indent}<{tagName} path=\"{EntryPath}\">");
 
+            // Если у текущего узла дерева (вкладки или главы) есть текст или маркеры картинок
             if (!string.IsNullOrWhiteSpace(EntryContent))
             {
+                // Форматируем текст с правильным ступенчатым отступом и добавляем в общий пул
                 sb.AppendLine(FormatTextWithIndent(EntryContent.Trim(), indent + "  "));
             }
 
-            foreach (var child in ChildEntries) child.RenderContentRecursive(sb, indent + "  ");
+            // Рекурсивно спускаемся по дереву к дочерним элементам (вложенным карточкам или подпунктам)
+            foreach (var child in ChildEntries)
+            {
+                child.RenderContentRecursive(sb, indent + "  ");
+            }
 
-            sb.AppendLine($"{indent}</{tagName}>\n");
+            // Закрываем XML-тег текущего узла
+            sb.AppendLine($"{indent}</{tagName}>");
         }
+
 
         private static string FormatTextWithIndent(string text, string indent)
         {
@@ -136,11 +153,10 @@ namespace ContextSlicer.Filesystem
         /// <summary>
         /// Универсальное ядро: рекурсивно строит дерево контента, сопоставляя JSON-токены с savedEntries
         /// </summary>
-        public static DocEntry? BuildEntryRecursive(JToken token, List<SyntaxEntry> savedEntries, string currentPath)
+        public static DocEntry? BuildEntryRecursive(JToken token, List<SyntaxEntry> savedEntries, string currentPath, bool includeImages)
         {
             DocEntry? localRoot = null;
 
-            // СЦЕНАРИЙ А: Обработка вкладки Google Docs
             string tabTitle = token["tabProperties"]?["title"]?.ToString() ?? string.Empty;
             if (!string.IsNullOrEmpty(tabTitle))
             {
@@ -152,41 +168,34 @@ namespace ContextSlicer.Filesystem
                     localRoot = new DocEntry { EntryTitle = tabTitle, EntryPath = match.EntryPath, Type = DocEntryType.Tab, HeadingLevel = 0 };
                     savedEntries.Remove(match);
 
-                    // Сканируем вложенные подвкладки, если они есть в структуре Google API
                     if (token["childTabs"] is JArray childTabs)
                     {
                         foreach (var childTab in childTabs)
                         {
-                            var childEntry = BuildEntryRecursive(childTab, savedEntries, fullPath);
+                            var childEntry = BuildEntryRecursive(childTab, savedEntries, fullPath, includeImages);
                             if (childEntry != null) localRoot.ChildEntries.Add(childEntry);
                         }
                     }
 
-                    // Сканируем контент параграфов текущей вкладки
                     var content = token["documentTab"]?["body"]?["content"] as JArray ?? token["body"]?["content"] as JArray;
-                    if (content != null) ParseParagraphsToTree(content, localRoot, savedEntries, fullPath);
+                    // Передаем флаг includeImages в парсер параграфов вкладки
+                    if (content != null) ParseParagraphsToTree(content, localRoot, savedEntries, fullPath, includeImages);
                 }
                 return localRoot;
             }
-
             return null;
         }
 
-        /// <summary>
-        /// Построчно обходит контент, автоматически укладывая HEADING_2 внутрь HEADING_1 по уровням иерархии
-        /// </summary>
         // ================================================================= -->
-        // ИСПРАВЛЕНО: ЖЕЛЕЗНЫЙ ИЕРАРХИЧЕСКИЙ СБОРЩИК КОНТЕНТА С ИЗОЛЯЦИЕЙ    -->
+        // ИСПРАВЛЕНО: ОТКАЗОУСТОЙЧИВЫЙ ИЕРАРХИЧЕСКИЙ СБОРЩИК КОНТЕНТА КНИГИ -->
         // ================================================================= -->
-        private static void ParseParagraphsToTree(JArray contentArray, DocEntry parentTab, List<SyntaxEntry> savedEntries, string tabPath)
+        private static void ParseParagraphsToTree(JArray contentArray, DocEntry parentTab, List<SyntaxEntry> savedEntries, string tabPath, bool includeImages)
         {
-            // Цепочка активных объектов DocEntry для контроля вложенности (0 — корень вкладки)
+            // Список-цепочка текущих активных разделов (0 — корень вкладки)
             var activeChain = new List<DocEntry> { parentTab };
-
-            // Словарь сквозных иерархических путей (0 — путь вкладки)
             var activePaths = new Dictionary<int, string> { { 0, tabPath } };
 
-            // Ссылка на текущий активный узел для сбора текста. Если null — текст отбрасывается.
+            // Приемник текста по умолчанию привязан к родительской вкладке
             DocEntry? currentActiveTarget = parentTab;
 
             foreach (var element in contentArray)
@@ -196,34 +205,43 @@ namespace ContextSlicer.Filesystem
 
                 string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
 
-                // Линейно и быстро вытягиваем чистый текст текущего абзаца
                 var textBuilder = new StringBuilder();
                 if (paragraph["elements"] is JArray elements)
                 {
                     foreach (var el in elements)
                     {
-                        textBuilder.Append(el["textRun"]?["content"]?.ToString() ?? string.Empty);
+                        if (el["textRun"]?["content"] is JToken textToken)
+                        {
+                            textBuilder.Append(textToken.ToString());
+                        }
+                        else if (includeImages && el["inlineObjectElement"]?["inlineObjectId"] is JToken imgToken)
+                        {
+                            string imgId = imgToken.ToString();
+                            if (!string.IsNullOrEmpty(imgId))
+                            {
+                                // Служебные теги всегда пишем строго с начала строки без пробелов для StartsWith парсера PDF
+                                textBuilder.Append($"{Environment.NewLine}<image src=\"{imgId}.png\" />{Environment.NewLine}");
+                            }
+                        }
                     }
                 }
                 string pText = textBuilder.ToString();
 
-                // ОБНАРУЖЕН ЗАГОЛОВОК (ЖЕСТКАЯ СТЕНА РАЗДЕЛЕНИЯ КОНТЕНТА)
+                // ОБНАРУЖЕН ЗАГОЛОВОК СТРУКТУРЫ
                 if (namedStyle.StartsWith("HEADING_") && int.TryParse(namedStyle.Substring(8), out int level))
                 {
                     string headingTitle = pText.Trim();
                     if (string.IsNullOrEmpty(headingTitle)) continue;
 
-                    // ПРАВИЛО 1: Любой встреченный заголовок закрывает все текущие вложенные подразделы!
-                    // Откатываем стек назад, пока не найдем узел, чей уровень строго выше нового заголовка
+                    // Закрываем в иерархии стека все старые подразделы, чей уровень ниже или равен новому
                     while (activeChain.Count > 1 && activeChain[activeChain.Count - 1].HeadingLevel >= level)
                     {
                         activeChain.RemoveAt(activeChain.Count - 1);
                     }
 
-                    // На вершине стека гарантированно находится правильный родитель текущего уровня
                     DocEntry correctParent = activeChain[activeChain.Count - 1];
 
-                    // Вычисляем путь родительского узла из словаря иерархии путей
+                    // Вычисляем сквозной путь родительского элемента
                     int targetParentLevel = level - 1;
                     while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel))
                     {
@@ -231,17 +249,17 @@ namespace ContextSlicer.Filesystem
                     }
                     string parentPath = activePaths[targetParentLevel];
 
-                    // Формируем строгий сквозной путь, идентичный парсеру
+                    // Собираем каскадный fullHeadingPath в точности по правилам GoogleDocSyntaxParser
                     string fullHeadingPath = string.IsNullOrEmpty(parentPath) ? headingTitle : $"{parentPath}/{headingTitle}";
 
-                    // Сверяемся с чек-листом выбранных на UI элементов
+                    // Проверяем наличие заголовка в чек-листе выбранных на UI элементов
                     var match = savedEntries.FirstOrDefault(e =>
                         (e.Type == EntryType.Heading || e.Type == EntryType.Section) &&
                         e.EntryPath.Equals(fullHeadingPath, StringComparison.OrdinalIgnoreCase));
 
                     if (match != null)
                     {
-                        // СЦЕНАРИЙ А: Раздел выбран пользователем. Создаем честный узел книги.
+                        // СЦЕНАРИЙ А: Раздел выбран на UI. Создаем легитимный XML-контейнер.
                         DocEntryType localType = match.Type == EntryType.Tab ? DocEntryType.Tab : DocEntryType.Heading;
                         var headingEntry = new DocEntry
                         {
@@ -251,39 +269,37 @@ namespace ContextSlicer.Filesystem
                             HeadingLevel = level
                         };
 
-                        // Удаляем из чек-листа и добавляем в ChildEntries правильного родителя
                         savedEntries.Remove(match);
                         correctParent.ChildEntries.Add(headingEntry);
 
-                        // Фиксируем новую главу в цепочке и включаем запись прозы в неё
                         activeChain.Add(headingEntry);
                         currentActiveTarget = headingEntry;
 
-                        // Сохраняем путь для иерархии вложенных подзаголовков
                         activePaths[level] = fullHeadingPath;
                         var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
                         foreach (var key in keysToRemove) activePaths.Remove(key);
                     }
                     else
                     {
-                        // СЦЕНАРИЙ Б: Раздел НЕ выбран на UI (Глава 5, невыбранный подпункт и т.д.)
-                        // ПРАВИЛО 2: Мы наглухо выключаем приемник текста! Весь контент летит в пустоту.
+                        // СЦЕНАРИЙ Б: Раздел НЕ выбран пользователем на UI (Глава 5, скрытый подпункт и т.д.)
+                        // ЖЕЛЕЗНОЕ ПРАВИЛО: Полностью выключаем приемник текста. Весь последующий контент летит в пустоту!
                         currentActiveTarget = null;
 
-                        // Создаем виртуальный маркер уровня для стека путей, чтобы вложенные в него подпункты 
-                        // (если они вдруг чекнуты) могли правильно вычислить свой иерархический путь
+                        // Фиксируем путь виртуального маркера уровня, чтобы вложенные в него чекнутые элементы 
+                        // (если они есть) могли без ошибок вычислить свой правильный каскадный fullHeadingPath
                         activePaths[level] = fullHeadingPath;
                         var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
                         foreach (var key in keysToRemove) activePaths.Remove(key);
                     }
+
                 }
                 else if (currentActiveTarget != null && !string.IsNullOrWhiteSpace(pText))
                 {
-                    // Обычный текст прозы накапливается ТОЛЬКО если приемник включен (не null)
                     currentActiveTarget.EntryContent += pText;
                 }
             }
         }
+
 
 
     }
@@ -293,35 +309,54 @@ namespace ContextSlicer.Filesystem
         // ================================================================= -->
         // ИСПРАВЛЕНО: СТРОГАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ ВЫЗОВОВ ПОСЛЕ ПАРСИНГА     -->
         // ================================================================= -->
-        public static async Task<string> BuildContextTextAsync(List<SyntaxEntry> savedEntries, string rootPath, bool includeDirectoryStructure, CancellationToken token)
+        public static async Task<string> BuildContextTextAsync(
+          List<SyntaxEntry> savedEntries,
+          string rootPath,
+          bool includeDirectoryStructure,
+          CancellationToken token)
         {
-            if (savedEntries == null || savedEntries.Count == 0 || string.IsNullOrWhiteSpace(rootPath)) return string.Empty;
+            // Перенаправляем вызов в новую перегрузку, передавая false для картинок
+            return await BuildContextTextAsync(
+                savedEntries,
+                rootPath,
+                includeDirectoryStructure,
+                false,
+                token);
+        }
+        public static async Task<string> BuildContextTextAsync(
+            List<SyntaxEntry> savedEntries,
+            string rootPath,
+            bool includeDirectoryStructure,
+            bool includeImages,
+            CancellationToken token)
+        {
+            if (savedEntries == null || savedEntries.Count == 0 || string.IsNullOrWhiteSpace(rootPath) || !File.Exists(rootPath))
+                return string.Empty;
 
-            if (!File.Exists(rootPath)) return string.Empty;
-
-            // 1. Вычитываем сырой JSON-кэш с диска
+            // Вычитываем сырой кэш JSON романа с диска
             string jsonContent = await File.ReadAllTextAsync(rootPath, Encoding.UTF8, token);
             var checkList = savedEntries.ToList();
 
-            // 2. СНАЧАЛА ПОЛНОСТЬЮ СТРОИМ ДЕРЕВО КНИГИ ИЗ JSON
+            // Создаем эталонное дерево книги
             var rootDocument = new RootDoc();
+
+            // Накатываем флаг картинок на корень перед запуском рекурсивного парсинга JSON!
+            rootDocument.IncludeImages = includeImages;
             rootDocument.FromJson(jsonContent, checkList);
 
-            // 3. ТОЛЬКО ТЕПЕРЬ, КОГДА ROOTDOC ПОЛНОСТЬЮ ПОРЕЗАЛ И НАПОЛНИЛ ДАННЫЕ, СБИРАЕМ ТЕКСТ
             var finalResult = new StringBuilder();
 
-            // Вызываем оглавление строго ПОСЛЕ парсинга по готовой структуре DocEntry!
+            // Собираем оглавление с красивыми палочками
             if (includeDirectoryStructure)
             {
                 finalResult.Append(rootDocument.BuildStructureMarkdown());
             }
 
-            // Дописываем художественный контент разделов
+            // Наливаем художественную прозу и текстовые маркеры картинок
             finalResult.Append(rootDocument.BuildContentText());
 
             return finalResult.ToString();
         }
-
     }
 }
 
