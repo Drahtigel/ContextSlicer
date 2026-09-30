@@ -858,65 +858,117 @@ public partial class MainViewModel : ObservableObject
         SilentSave();
     }
 
-
-    // Метод принудительной синхронизации текущего состояния дерева с моделью модуля
     // ================================================================= -->
-    // ИСПРАВЛЕНО: ЖЕСТКАЯ СИНХРОНИЗАЦИЯ ПУТЕЙ БЕЗ ИСКАЖЕНИЯ И ДУБЛИРОВАНИЯ-->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ПОЛНАЯ АДАПТИВНАЯ ОЧИСТКА И СИНХРОНИЗАЦИЯ СТРУКТУРЫ    -->
+    // ИСПРАВЛЕНО: СТРОГОЕ РАЗДЕЛЕНИЕ ЦЕЛИКОВЫХ ФАЙЛОВ И ТОЧЕЧНЫХ ФУНКЦИЙ -->
     // ================================================================= -->
     public void SyncTreeWithModule()
     {
         if (SelectedModule == null || RootNode == null) return;
 
-        var checkedFilesList = new List<string>();
-        var checkedEntriesList = new List<SyntaxEntry>();
+        SelectedModule.CheckedFiles.Clear();
+        SelectedModule.CheckedEntries.Clear();
 
-        // 1. ОПРЕДЕЛЯЕМ ТИП ПРОЕКТА ДЛЯ ИЗОЛЯЦИИ ЛОГИКИ ТЕКСТА И КОДА
         bool isTextProject = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
 
-        if (!isTextProject)
+        // 1. СБОР ДАННЫХ ДЛЯ ЛИТЕРАТУРНЫХ ПРОЕКТОВ (GOOGLE DOCS)
+        if (isTextProject)
         {
-            // ЛОКАЛЬНЫЙ ПРОЕКТ (КОД C#): Набиваем CheckedFiles списком путей к файлам на диске
-            var flatFilesList = new List<FileSystemNode>();
-            ContextBuilderService.GetCheckedFiles(RootNode, flatFilesList);
-            foreach (var node in flatFilesList)
+            var flatSyntaxList = new List<FileSystemNode>();
+            CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
+
+            foreach (var node in flatSyntaxList)
             {
-                checkedFilesList.Add(node.RelativePath);
+                if (node == null) continue;
+                SelectedModule.CheckedEntries.Add(new SyntaxEntry
+                {
+                    FilePath = string.Empty,
+                    EntryPath = node.EntryPath,
+                    DisplayName = node.Name,
+                    Type = node.SyntaxType,
+                    SpanInfo = node.SyntaxSpanInfo
+                });
+            }
+            return;
+        }
+
+        // =================================================================
+        // 2. СБОР ДАННЫХ ДЛЯ ТЕХНИЧЕСКИХ ПРОЕКТОВ (КОД C# / SQL)
+        // Иерархически обходим дерево, четко разделяя файлы целиком и функции
+        // =================================================================
+        var allCheckedNodes = new List<FileSystemNode>();
+        CollectAllCheckedNodesFlat(RootNode, allCheckedNodes);
+
+        foreach (var node in allCheckedNodes)
+        {
+            if (node == null) continue;
+
+            // Сценарий А: Это физический файл кода (.cs, .sql)
+            if (node.IsFile && !node.IsSyntaxNode && !string.IsNullOrEmpty(node.RelativePath))
+            {
+                // Проверяем: если у файла нет детей, ИЛИ у него висит заглушка загрузки, 
+                // ИЛИ у него стоит жесткая галочка True (выбран целиком) - сохраняем его в CheckedFiles!
+                bool hasNoLoadedChildren = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
+
+                if (node.IsChecked == true || hasNoLoadedChildren)
+                {
+                    if (!SelectedModule.CheckedFiles.Contains(node.RelativePath))
+                    {
+                        SelectedModule.CheckedFiles.Add(node.RelativePath);
+                    }
+                }
+            }
+            // Сценарий Б: Это синтаксический элемент (метод, класс, импорты) внутри файла
+            else if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
+            {
+                // Нам нужно убедиться, что его родительский файл НЕ выбран целиком.
+                // Если родительский файл выбран целиком, сохранять отдельные функции нет смысла - файл и так улетит в контекст.
+                var parentFile = FindParentFileNode(node);
+                if (parentFile != null && parentFile.IsChecked != true)
+                {
+                    SelectedModule.CheckedEntries.Add(new SyntaxEntry
+                    {
+                        FilePath = node.RelativePath,
+                        EntryPath = node.EntryPath,
+                        DisplayName = node.Name,
+                        Type = node.SyntaxType,
+                        SpanInfo = node.SyntaxSpanInfo
+                    });
+                }
             }
         }
-        else
+    }
+
+    /// <summary>
+    /// Вспомогательный плоский сборщик вообще всех чекнутых узлов дерева UI
+    /// </summary>
+    private void CollectAllCheckedNodesFlat(FileSystemNode node, List<FileSystemNode> result)
+    {
+        if (node == null || result == null) return;
+
+        if (node.IsChecked == true || node.IsChecked == null)
         {
-            // КНИЖНЫЙ ПРОЕКТ (GOOGLE DOCS): CheckedFiles остается чистым и пустым [], 
-            // так как ссылка на документ уже лежит в RootPath на верхнем уровне JSON!
+            result.Add(node);
         }
 
-        // 2. СБОР ОТМЕЧЕННЫХ ГАЛОЧКАМИ СИНТАКСИЧЕСКИХ НОД (ВКЛАДОК И ГЛАВ)
-        var flatSyntaxList = new List<FileSystemNode>();
-        CollectAllCheckedSyntaxNodes(RootNode, flatSyntaxList);
-
-        foreach (var node in flatSyntaxList)
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
         {
-            // Оптимизация: Для книг зануляем локальный жесткий FilePath, избавляя JSON от раздувания
-            string effFilePath = isTextProject ? string.Empty : node.RelativePath;
-
-            // Берем оригинальный EntryPath, который построил наш JSON-парсер
-            string cleanEntryPath = node.EntryPath;
-
-            checkedEntriesList.Add(new SyntaxEntry
-            {
-                FilePath = effFilePath,
-                EntryPath = cleanEntryPath,
-                DisplayName = node.Name,
-                Type = node.SyntaxType,
-                SpanInfo = node.SyntaxSpanInfo
-            });
+            CollectAllCheckedNodesFlat(child, result);
         }
+    }
 
-        // 3. ФИКСИРУЕМ ОЧИЩЕННЫЕ ДАННЫЕ В ТЕКУЩЕМ МОДУЛЕ ПРОЕКТА
-        SelectedModule.CheckedFiles = checkedFilesList;
-        SelectedModule.CheckedEntries = checkedEntriesList;
+    /// <summary>
+    /// Вспомогательный метод поиска родительского узла-файла для синтаксической ноды
+    /// </summary>
+    private FileSystemNode? FindParentFileNode(FileSystemNode node)
+    {
+        var current = node.Parent;
+        while (current != null)
+        {
+            if (current.IsFile && !current.IsSyntaxNode) return current;
+            current = current.Parent;
+        }
+        return null;
     }
 
 
@@ -1272,39 +1324,29 @@ public partial class MainViewModel : ObservableObject
         ExecuteSave(showMessage: false);
     }
 
-    // Основная логика сохранения
-
-    // Рекурсивный сбор всех выбранных элементов кода для сохранения в JSON
-    // ИСПРАВЛЕНО: Рекурсивный сбор синтаксических нод БЕЗ мусора и дубликатов
-    // Внутри MainViewModel.cs
     // ================================================================= -->
-    // ИСПРАВЛЕНО: АДАТИВНЫЙ СБОР СИНТАКСИСА ПО ТИПАМ ПРОЕКТОВ            -->
+    // ИСПРАВЛЕНО: БЕЗОШИБОЧНЫЙ СБОР СИНТАКСИСА ДЛЯ СОХРАНЕНИЯ В JSON    -->
     // ================================================================= -->
     private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
     {
-        if (node == null) return;
+        if (node == null || result == null) return;
 
+        // Если узел является синтаксическим элементом и он выбран (True или Indeterminate квадратик)
         if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
         {
-            // Проверяем тип текущего проекта, чтобы не сломать сохранение исходного кода
-            if (SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc)
-            {
-                // ДЛЯ КНИГ: Сохраняем любые отмеченные элементы (и вкладки, и главы-листья)
-                result.Add(node);
-            }
-            else
-            {
-                // ДЛЯ КОДА С#: Сохраняем только промежуточные ноды-контейнеры (!node.IsFile)
-                if (!node.IsFile)
-                {
-                    result.Add(node);
-                }
-            }
+            // ИСПРАВЛЕНО: Для проектов кода мы сохраняем абсолютно ВСЕ выбранные синтаксические ноды, 
+            // независимо от флага IsFile, так как методы и свойства теперь являются листьями дерева!
+            result.Add(node);
         }
 
-        foreach (var child in node.Children)
+        // Безопасный рекурсивный обход дочерних элементов дерева
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
         {
-            CollectAllCheckedSyntaxNodes(child, result);
+            if (child != null)
+            {
+                CollectAllCheckedSyntaxNodes(child, result);
+            }
         }
     }
 
@@ -1678,89 +1720,84 @@ public partial class MainViewModel : ObservableObject
             RestoreEntriesCheckState(child, savedEntries);
         }
     }
-    // Универсальный метод асинхронного парсинга файла и подселения синтаксических нод в дерево
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: РАЗДЕЛЕННЫЕ, ИЗОЛИРОВАННЫЕ ДИСКУРСЫ ДЛЯ КОДА И КНИГ   -->
+    // ================================================================= -->
+    /// <summary>
+    /// ГЛАВНЫЙ ДИСПЕТЧЕР: Маршрутизирует построение дерева без смешивания типов данных
+    /// </summary>
     public async Task PopulateSyntaxNodesAsync(FileSystemNode fileNode)
     {
-        // ИСПРАВЛЕНО: Проверяем, есть ли среди детей нода-заглушка "LoadingStub..."
-        bool hasStub = false;
+        if (fileNode == null) return;
+
+        // Удаляем техническую заглушку "LoadingStub...", если она присутствует
         for (int i = 0; i < fileNode.Children.Count; i++)
         {
             if (fileNode.Children[i].Name == "LoadingStub...")
             {
-                hasStub = true;
-                fileNode.Children.RemoveAt(i); // Удаляем техническую заглушку перед парсингом
+                fileNode.Children.RemoveAt(i);
                 break;
             }
         }
 
-        // Если заглушки нет И в списке уже есть элементы — значит, файл уже был полностью распарсен ранее, выходим
-        if (!hasStub && fileNode.Children.Count > 0) return;
-
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: Интеллектуальное определение расширения для кэша Google Docs-->
-        // ================================================================= -->
-        // Если файл лежит в папке кэша googlecache или имеет виртуальное имя, 
-        // принудительно выставляем ему расширение .gdoc, чтобы фабрика нашла нужный парсер
         string ext = System.IO.Path.GetExtension(fileNode.FullPath);
-        if (fileNode.RelativePath.EndsWith(".gdoc", StringComparison.OrdinalIgnoreCase) ||
-            fileNode.FullPath.Contains("googlecache"))
+
+        // Интеллектуальный перехват литературного типа проекта
+        bool isGoogleDoc = ext.Equals(".gdoc", StringComparison.OrdinalIgnoreCase) ||
+                           fileNode.RelativePath.EndsWith(".gdoc", StringComparison.OrdinalIgnoreCase) ||
+                           fileNode.FullPath.Contains("googlecache");
+
+        if (isGoogleDoc)
         {
-            ext = ".gdoc";
+            await PopulateGoogleDocNodes(fileNode);
         }
+        else
+        {
+            await PopulateCodeNodes(fileNode, ext);
+        }
+    }
 
-        // Теперь фабрика увидит легитимный .gdoc и не сбросит выполнение!
-        if (!SyntaxParserFactory.IsSupported(ext)) return;
-
-        var parser = SyntaxParserFactory.GetParser(ext);
+    /// <summary>
+    /// ИЗОЛИРОВАННЫЙ ПОТОК А: Сборка дерева для Google Документов (разделитель '/')
+    /// </summary>
+    private async Task PopulateGoogleDocNodes(FileSystemNode fileNode)
+    {
+        var parser = SyntaxParserFactory.GetParser(".gdoc");
         if (parser == null) return;
 
-        // Сюда выполнение теперь гарантированно дойдет, и точка останова загорится!
         List<SyntaxEntry> entries = await parser.ParseFileAsync(fileNode.FullPath, fileNode.RelativePath);
 
-
-        // Строим словарь уже существующих в UI виртуальных нод, чтобы не дублировать их при парсинге
         var existingNodes = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
         BuildExistingNodesMap(fileNode, existingNodes);
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ПОДКЛЮЧЕНИЕ МУЛЬТИЯЗЫЧНЫХ РЕСУРСОВ ДЛЯ ПРОЗЫ         -->
-        // ================================================================= -->
-        // ================================================================= -->
-        // ЧАСТЬ 2: ИЕРАРХИЧЕСКОЕ ПОДСЕЛЕНИЕ ГЛАВ ВНУТРЬ РОДИТЕЛЬСКИХ ВКЛАДОК -->
-        // ================================================================= -->
         foreach (var entry in entries)
         {
             if (existingNodes.ContainsKey(entry.EntryPath)) continue;
 
-            // СТРОГОЕ ПРАВИЛО: Вкладка (Tab) — это папка со стрелочкой (IsFile = false).
-            // Глава рассказа (Heading) или текстовая секция — это конечный элемент (IsFile = true).
             bool isLeaf = (entry.Type == EntryType.Heading || entry.Type == EntryType.Section);
 
             var newNode = new FileSystemNode
             {
-                Name = entry.DisplayName.Trim(), // Чистое название без запекания префиксов
+                Name = entry.DisplayName.Trim(),
                 RelativePath = entry.FilePath,
                 FullPath = fileNode.FullPath,
-                IsFile = isLeaf, // Разделяем поведение папок и файлов в UI
+                IsFile = isLeaf,
                 IsSyntaxNode = true,
                 SyntaxType = entry.Type,
                 SyntaxSpanInfo = entry.SpanInfo,
                 EntryPath = entry.EntryPath,
                 Parent = fileNode,
-                // АВТОРАЗВОРАЧИВАНИЕ: Если узел является вкладкой GoogleDoc, заставляем UI раскрыть его
                 IsExpanded = (entry.Type == EntryType.Tab)
             };
 
-            // Ищем родителя по косой черте (/) литературных вкладок рассказов
             string parentEntryPath = string.Empty;
-            int lastSeparator = entry.EntryPath.LastIndexOf('/');
+            int lastSeparator = entry.EntryPath.LastIndexOf('/'); // Жесткий литературный слэш
 
             if (lastSeparator > 0)
             {
                 parentEntryPath = entry.EntryPath.Substring(0, lastSeparator);
             }
 
-            // Пытаемся подселить к существующей родительской вкладке в UI
             if (!string.IsNullOrEmpty(parentEntryPath) && existingNodes.TryGetValue(parentEntryPath, out var parentUiNode))
             {
                 newNode.Parent = parentUiNode;
@@ -1768,14 +1805,11 @@ public partial class MainViewModel : ObservableObject
             }
             else
             {
-                // Если родительской вкладки нет, это корень проекта
                 fileNode.Children.Add(newNode);
             }
 
-            // Регистрируем ноду в карте, чтобы её могли найти её будущие дети (подглавы или главы)
             existingNodes[entry.EntryPath] = newNode;
 
-            // Восстановление галочек
             if (fileNode.IsChecked == true || (newNode.Parent != null && newNode.Parent.IsChecked == true))
             {
                 newNode.SetChecked(true, updateChildren: false, updateParent: false);
@@ -1783,7 +1817,83 @@ public partial class MainViewModel : ObservableObject
         }
 
         fileNode.SetChecked(fileNode.IsChecked, updateChildren: false, updateParent: true);
+    }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ЛЕНИВОЕ ВОССТАНОВЛЕНИЕ ГАЛОЧЕК СИНТАКСИСА ПРИ РАСКРЫТИИ-->
+    // ================================================================= -->
+    private async Task PopulateCodeNodes(FileSystemNode fileNode, string ext)
+    {
+        if (!SyntaxParserFactory.IsSupported(ext)) return;
+
+        var parser = SyntaxParserFactory.GetParser(ext);
+        if (parser == null) return;
+
+        List<SyntaxEntry> entries = await parser.ParseFileAsync(fileNode.FullPath, fileNode.RelativePath);
+
+        var existingNodes = new Dictionary<string, FileSystemNode>(StringComparer.Ordinal);
+        BuildExistingNodesMap(fileNode, existingNodes);
+
+        // Хэш-сет для мгновенного поиска сохраненных синтаксических узлов этого модуля
+        var savedSyntaxPaths = new HashSet<string>(StringComparer.Ordinal);
+        if (SelectedModule?.CheckedEntries != null)
+        {
+            foreach (var entry in SelectedModule.CheckedEntries)
+            {
+                if (entry != null && !string.IsNullOrEmpty(entry.EntryPath))
+                    savedSyntaxPaths.Add(entry.EntryPath);
+            }
+        }
+
+        foreach (var entry in entries)
+        {
+            if (existingNodes.ContainsKey(entry.EntryPath)) continue;
+
+            bool isContainer = (entry.Type == EntryType.Namespace || entry.Type == EntryType.Class || entry.Type == EntryType.Struct || entry.Type == EntryType.Interface);
+
+            var newNode = new FileSystemNode
+            {
+                Name = entry.DisplayName.Trim(),
+                RelativePath = entry.FilePath,
+                FullPath = fileNode.FullPath,
+                IsFile = !isContainer,
+                IsSyntaxNode = true,
+                SyntaxType = entry.Type,
+                SyntaxSpanInfo = entry.SpanInfo,
+                EntryPath = entry.EntryPath,
+                Parent = fileNode,
+                IsExpanded = isContainer
+            };
+
+            string parentEntryPath = string.Empty;
+            int lastDot = entry.EntryPath.LastIndexOf('.');
+
+            if (lastDot > 0)
+            {
+                parentEntryPath = entry.EntryPath.Substring(0, lastDot);
+            }
+
+            if (!string.IsNullOrEmpty(parentEntryPath) && existingNodes.TryGetValue(parentEntryPath, out var parentUiNode))
+            {
+                newNode.Parent = parentUiNode;
+                parentUiNode.Children.Add(newNode);
+            }
+            else
+            {
+                fileNode.Children.Add(newNode);
+            }
+
+            existingNodes[entry.EntryPath] = newNode;
+
+            // ИСПРАВЛЕНО: Проставляем галочку внутреннему методу или классу, 
+            // только если файл выбран целиком ИЛИ этот конкретный узел был сохранен в конфигурации!
+            if (fileNode.IsChecked == true || savedSyntaxPaths.Contains(entry.EntryPath))
+            {
+                newNode.SetChecked(true, updateChildren: false, updateParent: false);
+            }
+        }
+
+        fileNode.SetChecked(fileNode.IsChecked, updateChildren: false, updateParent: true);
     }
 
     // Вспомогательный метод для сбора карты уже существующих UI нод в файле
@@ -1811,20 +1921,13 @@ public partial class MainViewModel : ObservableObject
             BuildExistingNodesMap(child, map);
         }
     }
-
-
-
-    // Внутри MainViewModel.cs
-    // Внутри MainViewModel.cs
     // ================================================================= -->
-    // ИСПРАВЛЕНО: БЕЗОПАСНЫЙ НАКАТ ГАЛОЧЕК ДЛЯ ПРОЗЫ БЕЗ ДУБЛИРОВАНИЯ НОД-->
+    // ИСПРАВЛЕНО: НОРМАЛИЗАЦИЯ СЛЭШЕЙ ПРИ ИЕРАРХИЧЕСКОМ НАКАТЕ ГАЛОЧЕК  -->
     // ================================================================= -->
     private void FastPreloadSavedEntries(ContextModule module, FileSystemNode fileNode)
     {
         if (module == null || fileNode == null) return;
 
-        // СЦЕНАРИЙ А: Для текстовых проектов (GoogleDoc / WordDoc) работаем по эталонному дереву
-        // СЦЕНАРИЙ А: Для текстовых проектов (GoogleDoc / WordDoc) работаем по эталонному дереву
         if (SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc)
         {
             if (module.CheckedEntries == null || module.CheckedEntries.Count == 0) return;
@@ -1835,61 +1938,46 @@ public partial class MainViewModel : ObservableObject
             );
 
             ApplyCheckedStatesFromConfigRecursive(fileNode, savedPaths);
-
-            // ИСПРАВЛЕНО: Запускаем глубокий каскадный пересчет состояний снизу вверх 
-            // для абсолютно всех уровней вложенности вкладок и подвкладок!
             DeepVerifyAllCheckStates(fileNode);
             return;
         }
 
+        if (module.CheckedFiles == null || module.CheckedFiles.Count == 0) return;
 
-        // СЦЕНАРИЙ Б: Старая исходная логика генерации нод для проектов с исходным кодом C#
-        var savedEntries = module.CheckedEntries;
-        if (savedEntries == null || savedEntries.Count == 0) return;
+        // ИСПРАВЛЕНО: Создаем хэш-сет с принудительной заменой всех обратных слэшей на прямые
+        var savedFiles = new HashSet<string>(
+            module.CheckedFiles.Select(f => f.Replace('\\', '/')),
+            StringComparer.OrdinalIgnoreCase
+        );
 
-        fileNode.Children.Clear();
-        var nodesMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
+        // Накатываем галочки на файлы репозитория с учетом единого формата слэшей
+        ApplyCodeCheckedFilesRecursive(fileNode, savedFiles);
 
-        foreach (var entry in savedEntries)
+        // Запускаем сквозной пересчет квадратиков Indeterminate снизу вверх для всего дерева
+        DeepVerifyCheckStates(fileNode);
+    }
+
+    private void ApplyCodeCheckedFilesRecursive(FileSystemNode node, HashSet<string> savedFiles)
+    {
+        if (node == null) return;
+
+        if (node.IsFile && !string.IsNullOrEmpty(node.RelativePath))
         {
-            bool isLeaf = (entry.Type == EntryType.Heading || entry.Type == EntryType.Section);
-
-            var newNode = new FileSystemNode
+            // ИСПРАВЛЕНО: Приводим текущий путь из дерева к стандарту '/' перед поиском в хэш-сете
+            string cleanNodePath = node.RelativePath.Replace('\\', '/');
+            if (savedFiles.Contains(cleanNodePath))
             {
-                Name = entry.DisplayName.Trim(),
-                RelativePath = entry.FilePath,
-                FullPath = fileNode.FullPath,
-                IsFile = isLeaf,
-                IsSyntaxNode = true,
-                SyntaxType = entry.Type,
-                SyntaxSpanInfo = entry.SpanInfo,
-                EntryPath = entry.EntryPath,
-                Parent = fileNode
-            };
-
-            string parentEntryPath = string.Empty;
-            int lastDot = entry.EntryPath.LastIndexOf('.');
-            if (lastDot > 0)
-            {
-                parentEntryPath = entry.EntryPath.Substring(0, lastDot);
+                node.SetChecked(true, updateChildren: false, updateParent: false);
             }
-
-            if (!string.IsNullOrEmpty(parentEntryPath) && nodesMap.TryGetValue(parentEntryPath, out var parentUiNode))
-            {
-                newNode.Parent = parentUiNode;
-                parentUiNode.Children.Add(newNode);
-            }
-            else
-            {
-                fileNode.Children.Add(newNode);
-            }
-            nodesMap[entry.EntryPath] = newNode;
-
-            newNode.SetChecked(true, updateChildren: false, updateParent: false);
         }
 
-        fileNode.VerifyCheckState();
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
+        {
+            ApplyCodeCheckedFilesRecursive(child, savedFiles);
+        }
     }
+
     /// <summary>
     /// Рекурсивный каскадный пересчет состояний чекбоксов Tri-State снизу вверх
     /// </summary>

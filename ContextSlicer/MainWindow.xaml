@@ -561,17 +561,29 @@
                         <HierarchicalDataTemplate DataType="{x:Type local:FileSystemNode}" ItemsSource="{Binding Children}">
                             <StackPanel Orientation="Horizontal" Margin="2">
                                 <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <TextBlock Text="{Binding TypePrefixText}" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold" Margin="0,0,5,0">
+
+                                <!-- Префикс синтаксиса (NS, CLS, FUNC, PROP): Текст берется из свойства TypePrefixText -->
+                                <!-- Цвет жестко привязан к DynamicResource AccentBrush для идеального контраста в любой теме -->
+                                <TextBlock Text="{Binding TypePrefixText}" 
+                   Foreground="{DynamicResource AccentBrush}" 
+                   FontWeight="SemiBold" 
+                   Margin="0,0,5,0">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Style.Triggers>
+                                                <!-- Если префикс пустой (для художественного текста), полностью скрываем элемент -->
                                                 <Trigger Property="Text" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </Trigger>
+                                                <Trigger Property="Text" Value="{x:Null}">
                                                     <Setter Property="Visibility" Value="Collapsed"/>
                                                 </Trigger>
                                             </Style.Triggers>
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
+
+                                <!-- Чистое название самого элемента (имя класса, метода или файла) -->
                                 <TextBlock Text="{Binding Name}" Foreground="{DynamicResource TextBrush}" VerticalAlignment="Center"/>
                             </StackPanel>
                         </HierarchicalDataTemplate>

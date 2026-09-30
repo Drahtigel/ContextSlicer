@@ -69,27 +69,38 @@ public class FileSystemNode : INotifyPropertyChanged
     // ================================================================= -->
     // ИСПРАВЛЕНО: УДАЛЕНИЕ ТЕХНИЧЕСКИХ ПРЕФИКСОВ ДЛЯ ХУДОЖЕСТВЕННОЙ ПРОЗЫ-->
     // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: УЛЬТРА-КОРОТКИЕ МЕЖДУНАРОДНЫЕ МАРКЕРЫ СИНТАКСИСА КОДА -->
+    // ================================================================= -->
     public string TypePrefixText
     {
         get
         {
             if (!IsSyntaxNode) return string.Empty;
 
-            // Если это глава рассказа или вкладка — префикс НЕ нужен, выводим чистый текст!
+            // Для художественной прозы (главы, вкладки) префиксы полностью выключены
             if (SyntaxType == EntryType.Heading || SyntaxType == EntryType.Tab)
             {
                 return string.Empty;
             }
 
-            // Ваша существующая логика для исходного кода и SQL (оставляем без изменений)
-            if (System.Windows.Application.Current.Resources.Contains(TypeLocalKey))
+            // Математически точное сокращение технических маркеров по ТЗ
+            string shortTag = SyntaxType switch
             {
-                return System.Windows.Application.Current.Resources[TypeLocalKey] as string ?? string.Empty;
-            }
-            return $"[{SyntaxType.ToString().ToUpper()}]";
+                EntryType.Namespace => "NS",
+                EntryType.Class => "CLS",
+                EntryType.Function => "FUNC",
+                EntryType.Property => "PROP",
+                EntryType.Enum => "ENUM", // Мы за тобой наблюдаем!
+                EntryType.Struct => "STRCT",
+                EntryType.Interface => "INTF",
+                EntryType.Section => "SECT",
+                _ => SyntaxType.ToString().ToUpper()
+            };
+
+            return $"[{shortTag}]";
         }
     }
-
 
     public void SetChecked(bool? value, bool updateChildren, bool updateParent)
     {
