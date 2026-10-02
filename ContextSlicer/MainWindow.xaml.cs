@@ -117,29 +117,46 @@ public partial class MainWindow : Window
 
 
     // Обработчик ручного раскрытия узла дерева (Ленивая загрузка)
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПЕРЕНАПРАВЛЕНИЕ ЛЕНИВОГО РАСКРЫТИЯ НА MONOLITH MANAGER -->
+    // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: БЕЗУСЛОВНЫЙ ВЫЗОВ МЕНЕДЖЕРА ДЛЯ СЛИЧЕНИЯ И ДОГРУЗКИ ВЕТОК-->
+    // ================================================================= -->
     private async void TreeView_Expanded(object sender, RoutedEventArgs e)
     {
         if (e.OriginalSource is TreeViewItem tvi && tvi.DataContext is FileSystemNode node)
         {
-            // Строгое условие: парсим только если внутри РЕАЛЬНО лежит наша текстовая заглушка
-            if (node.Children.Any(c => c.Name == "LoadingStub..."))
+            // ИСПРАВЛЕНО: Убираем слепую блокировку по LoadingStub. 
+            // Если это физический файл диска ИЛИ синтаксический узел-контейнер книги (вкладка/глава),
+            // мы всегда передаем ноду в монолитный менеджер для сверки структуры с диском/кэшем!
+            bool isExpandableFile = node.IsFile && !node.IsSyntaxNode;
+            bool isExpandableBookContainer = node.IsSyntaxNode && (node.SyntaxType == EntryType.Tab || node.SyntaxType == EntryType.Namespace || node.SyntaxType == EntryType.Class);
+
+            if (isExpandableFile || isExpandableBookContainer)
             {
-                if (DataContext is MainViewModel vm)
+                try
                 {
-                    try
+                    if (FileSystemNode.ActiveManager != null)
                     {
-                        // Метод удалит LoadingStub, вызовет ParseFileAsync и подселит главы-листья (IsFile=true)
-                        await vm.PopulateSyntaxNodesAsync(node);
-                        node.VerifyCheckState();
+                        // Тихо вычищаем заглушку загрузки, если она осталась внутри ноды
+                        for (int i = node.Children.Count - 1; i >= 0; i--)
+                        {
+                            if (node.Children[i].Name == "LoadingStub...") node.Children.RemoveAt(i);
+                        }
+
+                        // Вызываем монолитный асинхронный конвейер догрузки и слияния
+                        await FileSystemNode.ActiveManager.PopulateSyntaxNodesAsync(node);
                     }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[TreeView Expand Error] {ex.Message}");
-                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[TreeView Monolith Expand Error] {ex.Message}");
                 }
             }
         }
     }
+
 
     private void TxtModuleName_TextChanged(object sender, TextChangedEventArgs e)
     {

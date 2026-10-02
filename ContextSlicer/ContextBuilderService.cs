@@ -100,6 +100,88 @@ public static class ContextBuilderService
         catch (UnauthorizedAccessException) { }
     }
 
+    // ================================================================= -->
+    // ДОБАВЛЕНО: УМНЫЙ ФОНОВЫЙ СЛИЯТЕЛЬ (MERGE) ДИСКА И КАРКАСА JSON    -->
+    // ================================================================= -->
+    /// <summary>
+    /// Сканирует физический диск и аккуратно доселяет отсутствующие файлы/папки в уже построенный JSON-каркас,
+    /// полностью защищая существующие Tri-State квадратики и галочки от затирания!
+    /// </summary>
+    public static void MergeDirectoryWithConfigTree(string currentPath, FileSystemNode parentNode, string rootPath)
+    {
+        if (string.IsNullOrEmpty(currentPath) || parentNode == null || !Directory.Exists(currentPath)) return;
+
+        try
+        {
+            var dirInfo = new DirectoryInfo(currentPath);
+
+            // 1. АВТОДОПИСЫВАНИЕ ОТСУТСТВУЮЩИХ ПОДДИРЕКТОРИЙ
+            foreach (var subDir in dirInfo.GetDirectories())
+            {
+                if (IsFolderExcluded(subDir.Name)) continue;
+
+                string relDirPath = Path.GetRelativePath(rootPath, subDir.FullName);
+
+                // Ищем, не был ли этот каталог уже упреждающе создан нашим каркасом из JSON
+                var existingDirNode = parentNode.Children.FirstOrDefault(c => c.Name.Equals(subDir.Name, StringComparison.OrdinalIgnoreCase) && !c.IsFile);
+
+                if (existingDirNode == null)
+                {
+                    // Если папки на диске не было в конфиге — создаем её в дефолтном пустом состоянии false
+                    existingDirNode = new FileSystemNode
+                    {
+                        Name = subDir.Name,
+                        FullPath = subDir.FullName,
+                        RelativePath = relDirPath,
+                        IsFile = false,
+                        Parent = parentNode,
+                        IsChecked = false
+                    };
+                    parentNode.Children.Add(existingDirNode);
+                }
+
+                // Рекурсивно шагаем вглубь папки для слияния файлов
+                MergeDirectoryWithConfigTree(subDir.FullName, existingDirNode, rootPath);
+            }
+
+            // 2. АВТОДОПИСЫВАНИЕ ОТСУТСТВУЮЩИХ ФАЙЛОВ КОДА (.cs, .sql)
+            foreach (var file in dirInfo.GetFiles())
+            {
+                if (IsExtensionExcluded(file.FullName)) continue;
+
+                string relFilePath = Path.GetRelativePath(rootPath, file.FullName);
+
+                // Ищем, не был ли этот файл уже упреждающе создан каркасом
+                var existingFileNode = parentNode.Children.FirstOrDefault(c => c.Name.Equals(file.Name, StringComparison.OrdinalIgnoreCase) && c.IsFile && !c.IsSyntaxNode);
+
+                if (existingFileNode == null)
+                {
+                    // Если файла с диска не было в конфиге — аккуратно доселяем его на экран в статусе false
+                    var childNode = new FileSystemNode
+                    {
+                        Name = file.Name,
+                        FullPath = file.FullName,
+                        RelativePath = relFilePath,
+                        IsFile = true,
+                        Parent = parentNode,
+                        IsChecked = false
+                    };
+
+                    // Если файл поддерживает ленивый синтаксис — вешаем стандартную заглушку раскрытия
+                    string ext = Path.GetExtension(file.FullName);
+                    if (SyntaxParserFactory.IsSupported(ext))
+                    {
+                        childNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = childNode, IsFile = true });
+                    }
+
+                    parentNode.Children.Add(childNode);
+                }
+            }
+        }
+        catch (UnauthorizedAccessException) { /* Защита от системных заблокированных папок Windows */ }
+    }
+
+
     public static void GetCheckedFiles(FileSystemNode node, List<FileSystemNode> result)
     {
         // ЖЕСТКАЯ ЗАЩИТА: Если корень дерева или текущий узел аннулирован, прерываем рекурсию
