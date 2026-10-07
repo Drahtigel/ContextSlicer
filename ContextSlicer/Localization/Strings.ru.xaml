@@ -129,5 +129,11 @@
     <system:String x:Key="Str_Err_PdfSaveFailed">Не удалось сохранить PDF документ:</system:String>
     <system:String x:Key="Str_IncludeImages">Включать изображения в PDF</system:String>
     <system:String x:Key="Str_Err_ModuleDuplicate">Модуль с таким названием уже существует в этом проекте!</system:String>
+    <!-- Новые строки валидации модулей и проектов (RU) -->
+    <system:String x:Key="Str_Msg_ConfirmDeleteModule">Вы уверены, что хотите полностью удалить этот модуль и все его сохраненные настройки файлов?</system:String>
+    <system:String x:Key="Str_Title_DeleteModule">Удаление модуля</system:String>
+    <system:String x:Key="Str_Err_ProjectNameEmpty">Имя проекта не может быть пустым или состоять только из пробелов.</system:String>
+    <system:String x:Key="Str_Err_ProjectDuplicate">Проект с названием "{0}" уже существует!</system:String>
+    <system:String x:Key="Str_Err_ModuleNameEmpty">Имя модуля не может быть пустым!</system:String>
 
 </ResourceDictionary>

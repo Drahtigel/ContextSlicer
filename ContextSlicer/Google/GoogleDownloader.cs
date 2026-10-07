@@ -302,4 +302,58 @@ public class GoogleDownloader
             return string.Empty;
         }
     }
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: БЫСТРЫЙ ИНТЕЛЛЕКТУАЛЬНЫЙ СВЕРИТЕЛЬ ДАТЫ ИЗМЕНЕНИЯ ОБЛАКА-->
+    // ================================================================= -->
+    /// <summary>
+    /// Запрашивает у Google Drive API точную дату последнего изменения документа.
+    /// Возвращает null, если не удалось достучаться до API.
+    /// </summary>
+    public async Task<DateTime?> GetCloudModifiedTimeAsync(string url, string authJsonPath)
+    {
+        string docId = ExtractDocumentId(url);
+        if (string.IsNullOrEmpty(docId) || string.IsNullOrEmpty(authJsonPath) || !File.Exists(authJsonPath)) return null;
+
+        try
+        {
+            string credentialsText = await File.ReadAllTextAsync(authJsonPath);
+            var creds = Newtonsoft.Json.Linq.JObject.Parse(credentialsText);
+            string clientEmail = creds["client_email"]?.ToString() ?? string.Empty;
+            string privateKeyRaw = creds["private_key"]?.ToString() ?? string.Empty;
+            if (string.IsNullOrEmpty(clientEmail) || string.IsNullOrEmpty(privateKeyRaw)) return null;
+
+            string accessToken = await GetGoogleAccessTokenAsync(clientEmail, privateKeyRaw);
+            if (string.IsNullOrEmpty(accessToken)) return null;
+
+            // Запрашиваем метаданные файла из Drive API (запрашиваем строго одно поле modifiedTime)
+            string driveApiUrl = $"https://googleapis.com{docId}?fields=modifiedTime";
+            var request = new HttpRequestMessage(HttpMethod.Get, driveApiUrl);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var response = await _httpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return null;
+
+            // ================================================================= -->
+            // ИСПРАВЛЕНО CS8600: ДОБАВЛЕН NULLABLE СИМВОЛ ? ДЛЯ СТРОКИ МЕТАДАННЫХ-->
+            // ================================================================= -->
+            string jsonResponse = await response.Content.ReadAsStringAsync();
+            var fileMeta = Newtonsoft.Json.Linq.JObject.Parse(jsonResponse);
+
+            // ИСПРАВЛЕНО: Объявляем переменную как string?, полностью удовлетворяя компилятор .NET!
+            string? modifiedTimeStr = fileMeta["modifiedTime"]?.ToString();
+
+            if (DateTime.TryParse(modifiedTimeStr, out DateTime cloudTime))
+            {
+                return cloudTime.ToLocalTime();
+            }
+
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Google Drive Meta Error] {ex.Message}");
+        }
+        return null;
+    }
+
 }

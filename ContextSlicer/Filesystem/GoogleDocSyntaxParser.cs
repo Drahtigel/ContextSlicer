@@ -1,9 +1,8 @@
-﻿using Microsoft.CodeAnalysis;
-using Newtonsoft.Json.Linq;
+﻿using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.RegularExpressions;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -11,65 +10,75 @@ namespace ContextSlicer.Filesystem;
 
 public class GoogleDocSyntaxParser : ISyntaxParser
 {
-    private const int TargetPageSize = 1800;
-
     public async Task<List<SyntaxEntry>> ParseFileAsync(string absolutePath, string relativePath)
     {
         var result = new List<SyntaxEntry>();
         if (!File.Exists(absolutePath)) return result;
 
-        string jsonContent = await File.ReadAllTextAsync(absolutePath);
-        if (string.IsNullOrEmpty(jsonContent)) return result;
-
+        // Чистый асинхронный ввод-вывод
+        string jsonContent = string.Empty;
         try
         {
-            var docJson = JObject.Parse(jsonContent);
-            int globalCharIndex = 0;
-
-            // Корректный разбор с сохранением строгой иерархии вкладок
-            if (docJson["tabs"] is JArray tabsArray && tabsArray.Count > 0)
-            {
-                foreach (JObject tabJson in tabsArray)
-                {
-                    ParseTabRecursive(tabJson, relativePath, string.Empty, ref globalCharIndex, result);
-                }
-            }
-            else if (docJson["body"] != null)
-            {
-                var bodyToken = docJson["body"];
-                if (bodyToken != null)
-                {
-                    var bodyEntries = ParseContentNodes(bodyToken, relativePath, string.Empty, ref globalCharIndex);
-                    result.AddRange(bodyEntries);
-                }
-            }
-
-            if (result.Count == 0)
-            {
-                string fullText = ExtractRawTextFromTabs(docJson);
-                if (!string.IsNullOrEmpty(fullText))
-                {
-                    result.AddRange(ParseFallbackText(fullText, relativePath));
-                }
-            }
+            jsonContent = await File.ReadAllTextAsync(absolutePath);
         }
         catch (Exception ex)
         {
-            // Замена хардкода логов на строки локализации при выводе пользователю/в отладку
             string errTemplate = Application.Current.Resources["Str_Err_GoogleParseError"] as string
-                                 ?? "Failed to parse Google Document structure.";
+                                     ?? "Failed to parse Google Document structure.";
             System.Diagnostics.Debug.WriteLine($"[{errTemplate}] {ex.Message}");
         }
-        return result;
+        if (string.IsNullOrEmpty(jsonContent)) return result;
+
+        // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Переносим тяжелый парсинг JObject и рекурсивный обход
+        // СТРОГО в фоновый поток Task.Run, полностью защищая главный поток WPF от зависаний!
+        return await Task.Run(() =>
+        {
+            try
+            {
+                var docJson = JObject.Parse(jsonContent);
+                int globalCharIndex = 0;
+
+                if (docJson["tabs"] is JArray tabsArray && tabsArray.Count > 0)
+                {
+                    foreach (JObject tabJson in tabsArray)
+                    {
+                        ParseTabRecursive(tabJson, relativePath, string.Empty, ref globalCharIndex, result);
+                    }
+                }
+                else if (docJson["body"] != null)
+                {
+                    var bodyToken = docJson["body"];
+                    if (bodyToken != null)
+                    {
+                        var bodyEntries = ParseContentNodes(bodyToken, relativePath, string.Empty, ref globalCharIndex);
+                        result.AddRange(bodyEntries);
+                    }
+                }
+
+                if (result.Count == 0)
+                {
+                    string fullText = ExtractRawTextFromTabs(docJson);
+                    if (!string.IsNullOrEmpty(fullText))
+                    {
+                        result.AddRange(ParseFallbackText(fullText, relativePath));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                string errTemplate = Application.Current.Resources["Str_Err_GoogleParseError"] as string
+                                     ?? "Failed to parse Google Document structure.";
+                System.Diagnostics.Debug.WriteLine($"[{errTemplate}] {ex.Message}");
+            }
+            return result;
+        });
     }
 
     private void ParseTabRecursive(JToken tab, string relativePath, string parentPath, ref int charIndex, List<SyntaxEntry> resultList)
     {
-        // Локализация дефолтного имени вкладки, если заголовок пуст
         string defTabTitle = Application.Current.Resources["Str_Type_Tab"] as string ?? "Tab";
         string tabTitle = tab["tabProperties"]?["title"]?.ToString() ?? defTabTitle;
 
-        // Формируем EntryPath с нормализованными разделителями во избежание разрушения ключей дерева
         string currentTabPath = string.IsNullOrEmpty(parentPath) ? tabTitle : $"{parentPath}/{tabTitle}";
 
         resultList.Add(new SyntaxEntry
@@ -106,9 +115,7 @@ public class GoogleDocSyntaxParser : ISyntaxParser
         var contentArray = documentTab["body"]?["content"] as JArray;
         if (contentArray == null) return entries;
 
-        // ИЕРАРХИЧЕСКИЙ СТЭК ПУТЕЙ: Индекс списка отражает уровень HEADING_ (0 — это путь самой вкладки)
         var activePaths = new Dictionary<int, string> { { 0, tabPath } };
-        int lastLevel = 0;
 
         foreach (var element in contentArray)
         {
@@ -136,7 +143,6 @@ public class GoogleDocSyntaxParser : ISyntaxParser
 
                         if (!string.IsNullOrEmpty(headingText))
                         {
-                            // НАХОДИМ ПРАВИЛЬНОГО РОДИТЕЛЯ: Шагаем по уровням заголовков вверх (level - 1 и ниже)
                             int targetParentLevel = level - 1;
                             while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel))
                             {
@@ -144,8 +150,6 @@ public class GoogleDocSyntaxParser : ISyntaxParser
                             }
 
                             string parentPath = activePaths[targetParentLevel];
-
-                            // Строим СТРОГИЙ сквозной каскадный путь для дерева UI
                             string entryPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
 
                             entries.Add(new SyntaxEntry
@@ -157,9 +161,7 @@ public class GoogleDocSyntaxParser : ISyntaxParser
                                 SpanInfo = $"{currentAbsoluteIndex},{elementLength}"
                             });
 
-                            // Фиксируем путь текущего уровня и сносим старые глубокие ветки
                             activePaths[level] = entryPath;
-                            lastLevel = level;
 
                             var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
                             foreach (var key in keysToRemove) activePaths.Remove(key);
@@ -170,12 +172,13 @@ public class GoogleDocSyntaxParser : ISyntaxParser
             }
             else
             {
-                currentAbsoluteIndex += (element.ToString().Length / 10);
+                // ИСПРАВЛЕНО: Вместо вызова убойного тяжелого .ToString().Length 
+                // мы используем легкую оценку шага без выделения строк в памяти!
+                currentAbsoluteIndex += 50;
             }
         }
         return entries;
     }
-
 
     private string ExtractRawTextFromTabs(JObject docJson)
     {

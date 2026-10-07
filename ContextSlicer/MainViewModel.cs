@@ -24,6 +24,7 @@ namespace ContextSlicer;
 
 public partial class MainViewModel : ObservableObject
 {
+    private IProjectTreeManager? _activeTreeManager;
     private readonly string _configFilePath;
     [ObservableProperty] private bool _isDarkTheme;
     [ObservableProperty] private ObservableCollection<ProjectConfig> _projects = new();
@@ -241,100 +242,68 @@ public partial class MainViewModel : ObservableObject
     private string _excludedExtensionsInput = ".png, .jpg, .jpeg, .gif, .ico, .bmp, .webp, .mp3, .wav, .ogg, .flac, .aac, .mp4, .avi, .mkv, .mov, .zip, .rar, .7z, .tar, .gz, .dll, .exe, .pdb, .suo, .user, .fbx, .obj, .max, .blend, .3ds, .bak, .tmp, .temp, .log";
 
     [RelayCommand]
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АБСОЛЮТНЫЙ ПОЛИМОРФИЗМ ПОДСЧЕТА РАЗМЕРА ЧЕРЕЗ МЕНЕДЖЕР -->
+    // ================================================================= -->
     private async Task RecalculateContextSizeAsync()
     {
-        if (RootNode == null)
-        {
-            TotalCharacters = 0;
-            EstimatedTokens = 0;
-            return;
-        }
+        // 1. Сразу отменяем предыдущую задачу при дребезге чекбокса
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ЖЕСТКАЯ ЗАЩИТА ОТ NULL ПРИ АСИНХРОННОЙ СМЕНЕ ПРОЕКТА -->
-        // ================================================================= -->
         IsCalculatingSize = true;
 
-        await Task.Run(async () =>
+        // Фиксируем ссылки на правила и менеджер в локальные переменные до ухода в поток
+        string localPromptRules = PromptRules ?? string.Empty;
+        string localModuleRules = ModuleRules ?? string.Empty;
+        bool localIncludeStructure = IncludeDirectoryStructure;
+        var manager = _activeTreeManager;
+
+        try
         {
-            long charCount = 0;
-            long totalTokens = 0;
-
-            long rulesLength = (PromptRules?.Length ?? 0) + (ModuleRules?.Length ?? 0);
-            long tokensFromRules = rulesLength / 2;
-
-            // КРИТИЧЕСКИЙ ШТРИХ: Запоминаем ссылку в локальную переменную прямо внутри потока Task.Run.
-            // Даже если UI-поток занулит глобальный RootNode в процессе переключения проектов,
-            // наша локальная копия localRoot гарантированно удержит дерево в памяти, исключая краш!
-            var localRoot = RootNode;
-            if (localRoot == null)
+            await Task.Run(async () =>
             {
-                TotalCharacters = 0;
-                EstimatedTokens = 0;
-                return;
-            }
+                long contentCharacters = 0;
 
-            bool isLiterary = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
-
-            if (isLiterary)
-            {
-                // ИСПРАВЛЕНО: Читаем путь строго из локальной копии localRoot во избежание NullReferenceException
-                string bookRootPath = localRoot.FullPath ?? string.Empty;
-
-                string fullLiteraryText = await GoogleDocBuilder.BuildContextTextAsync(
-                    SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
-                    bookRootPath,
-                    IncludeDirectoryStructure,
-                    _cts?.Token ?? CancellationToken.None);
-
-                charCount = fullLiteraryText.Length + rulesLength;
-                long tokensFromBook = fullLiteraryText.Length / 2;
-                totalTokens = tokensFromBook + tokensFromRules;
-            }
-            else
-            {
-                var checkedFiles = new List<FileSystemNode>();
-                // ИСПРАВЛЕНО: Собираем файлы строго из локальной копии localRoot
-                ContextBuilderService.GetCheckedFiles(localRoot, checkedFiles);
-
-                ContextBuilderService.GetCheckedFiles(RootNode, checkedFiles);
-
-                foreach (var file in checkedFiles)
+                // Если менеджер инициализирован — запрашиваем у него чистый вес выбранного контекста
+                if (manager != null && manager.RootNode != null)
                 {
-                    if (file != null && File.Exists(file.FullPath))
-                    {
-                        try
-                        {
-                            var fi = new FileInfo(file.FullPath);
-                            charCount += fi.Length;
-
-                            if (IncludeDirectoryStructure)
-                            {
-                                charCount += (file.RelativePath?.Length ?? 0) + 10;
-                            }
-                        }
-                        catch { }
-                    }
+                    contentCharacters = await manager.CalculateSelectedCharactersAsync(localIncludeStructure, token);
                 }
 
-                // Плюсуем правила
-                charCount += rulesLength;
+                // Математически точный расчет итоговых весов с учетом правил
+                long rulesLength = localPromptRules.Length + localModuleRules.Length;
+                long totalCharacters = contentCharacters + rulesLength;
 
-                long codeLength = charCount - rulesLength;
-                if (codeLength < 0) codeLength = 0;
+                // Рассчитываем токены на основе итогового суммарного объема символов
+                long totalTokens = totalCharacters / 2;
 
-                long tokensFromCode = codeLength / 4; // Английский код легкий
-
-                totalTokens = tokensFromCode + tokensFromRules;
-            }
-
-            // Записываем идеальные рантайм-показания на нижнюю панель WPF
-            TotalCharacters = charCount;
-            TotalTokens = totalTokens;
-        });
-
-        IsCalculatingSize = false;
+                // Безопасно публикуем результаты на нижней панели интерфейса WPF
+                if (!token.IsCancellationRequested)
+                {
+                    _ = System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        TotalCharacters = totalCharacters;
+                        EstimatedTokens = totalTokens; // Синхронизировано с XAML-привязкой ComputedState!
+                    }));
+                }
+            }, token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Context Size Calc Error] {ex.Message}");
+        }
+        finally
+        {
+            _ = System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                IsCalculatingSize = false;
+            }));
+        }
     }
+
 
     partial void OnPromptRulesChanged(string value) => _ = RecalculateContextSizeAsync();
     partial void OnModuleRulesChanged(string value) => _ = RecalculateContextSizeAsync();
@@ -343,34 +312,30 @@ public partial class MainViewModel : ObservableObject
     // Автоматический пересчет токенов при включении/выключении картинок на форме
     partial void OnIncludeImagesChanged(bool value) => _ = RecalculateContextSizeAsync();
 
-
     [RelayCommand]
     private void DeleteCurrentModule()
     {
         if (SelectedModule == null) return;
 
-        // Спрашиваем подтверждение удаления на языке системы
-        var result = System.Windows.MessageBox.Show(
-            "Вы уверены, что хотите полностью удалить этот модуль и все его сохраненные настройки файлов?",
-            "Удаление модуля",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
+        // ИСПРАВЛЕНО: Полная локализация диалога удаления модуля из ресурсов
+        string confirmMsg = Application.Current.Resources["Str_Msg_ConfirmDeleteModule"] as string
+            ?? "Вы уверены, что хотите полностью удалить этот модуль?";
+        string titleMsg = Application.Current.Resources["Str_Title_DeleteModule"] as string
+            ?? "Удаление модуля";
+
+        var result = MessageBox.Show(confirmMsg, titleMsg, MessageBoxButton.YesNo, MessageBoxImage.Question);
 
         if (result == MessageBoxResult.Yes)
         {
             var moduleToRemove = SelectedModule;
-            SelectedModule = null; // Сбрасываем выбор
+            SelectedModule = null;
 
             Modules.Remove(moduleToRemove);
             OnPropertyChanged(nameof(IsModuleSelectorEnabled));
 
-            // Автоматически сохраняем изменения на диск
             SaveProject();
         }
     }
-
-  //  public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
-
 
     // Свойство для динамического вывода имени проекта в заголовок Expander
     // Динамическое свойство для заголовка экспандера (Исключает наложение текста)
@@ -430,7 +395,7 @@ public partial class MainViewModel : ObservableObject
         LoadProjects();
         IsPdfFormat = true;
     }
-    private string GetKeyPathByEmail(string email)
+    public string GetKeyPathByEmail(string email)
     {
         if (string.IsNullOrEmpty(email)) return string.Empty;
 
@@ -454,22 +419,37 @@ public partial class MainViewModel : ObservableObject
         return string.Empty;
     }
 
-    // ОБНОВЛЕННАЯ КОМАНДА СИНХРОНИЗАЦИИ (Кнопка V): Принудительный сброс кэша и перечитывание
-    // Внутри MainViewModel.cs
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: КАТЕГОРИЧЕСКАЯ ВЫЧИСТКА ДУБЛИКАТОВ И СИНХРОНИЗАЦИЯ КЭША-->
+    // ================================================================= -->
     [RelayCommand]
     private async Task SyncProjectSource()
     {
         if (SelectedProject == null || string.IsNullOrWhiteSpace(RootPath)) return;
 
-        // Если текущий проект — Google Документ, выполняем жесткий перезапрос структуры из облака
+        // 1. Если текущий проект — Google Документ, выполняем жесткий перезапрос структуры из облака
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ПЕРЕДАЧА ВАЛИДНОГО ПУТИ К ФАЙЛУ КЛЮЧА ДЛЯ ОБНОВЛЕНИЯ КЭША-->
+        // ================================================================= -->
+        // 1. Если текущий проект — Google Документ, выполняем жесткий перезапрос структуры из облака
         if (SelectedProject.Type == ProjectType.GoogleDoc)
         {
-            string encryptedKey = Properties.Settings.Default.EncryptedGoogleApiKey ?? string.Empty;
-            string apiKey = SecureCredentialStorage.DecryptString(encryptedKey);
-            if (string.IsNullOrWhiteSpace(apiKey))
+            // ИСПРАВЛЕНО: Вытаскиваем Email сервисного аккаунта, сохраненный в конфигурации проекта
+            string serviceAccountEmail = SelectedProject.GoogleApiKey;
+            if (string.IsNullOrWhiteSpace(serviceAccountEmail))
+            {
+                // Если поле пустое — берем дефолтный аккаунт из настроек приложения
+                serviceAccountEmail = Properties.Settings.Default.DefaultServiceAccountEmail;
+                SelectedProject.GoogleApiKey = serviceAccountEmail;
+            }
+
+            // ИСПРАВЛЕНО: Превращаем Email в честный физический путь к JSON-файлу на диске!
+            string keyPath = GetKeyPathByEmail(serviceAccountEmail);
+
+            if (string.IsNullOrWhiteSpace(keyPath) || !File.Exists(keyPath))
             {
                 string authErr = Application.Current.Resources["Str_Err_GoogleAuthFailed"] as string
-                                 ?? "Google API Key отсутствует или поврежден!";
+                                 ?? "Файл ключа авторизации Google Docs не найден на диске.";
                 string authTitle = Application.Current.Resources["Str_Err_ValidationTitle"] as string
                                    ?? "Ошибка авторизации";
                 MessageBox.Show(authErr, authTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -486,15 +466,16 @@ public partial class MainViewModel : ObservableObject
                 var downloader = new GoogleDownloader();
                 string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
 
-                // Принудительно качаем свежую структуру, игнорируя проверку IsCacheExpired
-                bool success = await downloader.DownloadToCacheAsync(RootPath, projectBaseDir, apiKey);
+                // ИСПРАВЛЕНО: Передаем ВАЛИДНЫЙ путь keyPath вместо сырой текстовой строки apiKey!
+                // Теперь File.Exists внутри загрузчика отработает идеально, и кэш обновится!
+                bool success = await downloader.DownloadToCacheAsync(RootPath, projectBaseDir, keyPath);
                 if (!success)
                 {
                     string syncErr = Application.Current.Resources["Str_Err_GoogleDocUnavailable"] as string
-                                     ?? "Не удалось обновить кэш из облака.";
-                    string syncTitle = Application.Current.Resources["Str_Err_NetworkTitle"] as string
+                                     ?? "Не удалось обновить кэш из облака. Проверьте сеть или доступ к документу.";
+                    string syncErrTitle = Application.Current.Resources["Str_Err_NetworkTitle"] as string
                                        ?? "Ошибка синхронизации";
-                    MessageBox.Show(syncErr, syncTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show(syncErr, syncErrTitle, MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
             }
@@ -504,24 +485,36 @@ public partial class MainViewModel : ObservableObject
                 IsUpdateOverlayVisible = false; // Гарантированно гасим оверлей обновления
             }
         }
+        // ================================================================= -->
 
-        // ИСПРАВЛЕНО CS0103: Заменяем удаленный метод RefreshTreeView на атомарный менеджер
+
+        // 2. ПОЛИМОРФНЫЙ ПЕРЕЗАПУСК МЕНЕДЖЕРОВ (ИСПРАВЛЕНО): 
+        // Полностью удален весь дублирующий мусор, который слепо вызывал ProjectTreeManager для всех подряд!
+        // Теперь после обновления диска или облачного кэша строго создается нужный менеджер дерева.
         if (SelectedProject != null && SelectedModule != null)
         {
-            var manager = new ProjectTreeManager(SelectedProject, SelectedModule);
-            FileSystemNode.ActiveManager = manager;
-            RootNode = manager.RootNode;
-        }
+            bool isText = SelectedProject.Type == ProjectType.GoogleDoc || SelectedProject.Type == ProjectType.WordDoc;
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: БЕЗОПАСНАЯ СИНХРОНИЗАЦИЯ ЧЕРЕЗ PROJECTTREEMANAGER     -->
-        // ================================================================= -->
-        if (SelectedProject != null && SelectedModule != null)
-        {
-            // Пересоздаем монолитный менеджер, который обновит каркас и подтянет живой диск
-            var manager = new ProjectTreeManager(SelectedProject, SelectedModule);
-            FileSystemNode.ActiveManager = manager;
-            RootNode = manager.RootNode;
+            if (isText)
+            {
+                // Вызываем изолированный менеджер прозы для перечитывания свежего JSON-кэша книг
+                var bookManager = new BookTreeManager(SelectedProject, SelectedModule);
+                FileSystemNode.ActiveManager = null; // Для книг Roslyn-мост не нужен
+                RootNode = bookManager.RootNode;
+                _activeTreeManager = bookManager; // Фиксируем мост для мгновенного пересчета токенов!
+            }
+            else
+            {
+                // Вызываем технический менеджер для пересбора исходного кода проекта C# / SQL
+                var codeManager = new ProjectTreeManager(SelectedProject, SelectedModule);
+                FileSystemNode.ActiveManager = codeManager; // Взводим Roslyn-мост ленивой загрузки
+                RootNode = codeManager.RootNode;
+                _activeTreeManager = codeManager; // Фиксируем мост кода
+            }
+
+            // Уведомляем интерфейс WPF о замене корня дерева и принудительно пинаем асинхронный расчет токенов
+            OnPropertyChanged(nameof(RootNode));
+            _ = RecalculateContextSizeAsync();
         }
 
         string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
@@ -531,20 +524,23 @@ public partial class MainViewModel : ObservableObject
                               ?? "Успех";
         MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
     }
-    // ================================================================= -->
-    // ВОССТАНОВЛЕНО: АТОМАРНЫЙ ДИСПЕТЧЕР СМЕНЫ ПРОЕКТА ONSELECTEDPROJECTCHANGED -->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ЖЕСТКОЕ РАЗВЕДЕНИЕ ДИСПЕТЧЕРОВ ДЛЯ КОДА И ДЛЯ КНИГ     -->
-    // ================================================================= -->
+
+
+
     // ================================================================= -->
     // ИСПРАВЛЕНО: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК РАЗДЕЛЕННЫХ МЕНЕДЖЕРОВ   -->
     // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПОЛНОЕ ИСКЛЮЧЕНИЕ ГОНКИ И ЗАЦИКЛИВАНИЯ ПРИ СМЕНЕ ПРОЕКТОВ -->
+    // ================================================================= -->
     partial void OnSelectedProjectChanged(ProjectConfig? value)
     {
+        // ЖЕСТКАЯ ЗАЩИТА: Если мы уже находимся внутри процесса обновления полей — выходим сразу
+        if (_isUpdatingFields) return;
+
         if (value != null)
         {
-            // 1. Сначала жестко фиксируем локальные текстовые поля ввода на UI
+            // 1. Просто обновляем локальные текстовые поля ввода на UI
             ProjectNameInput = value.ProjectName;
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
@@ -552,38 +548,35 @@ public partial class MainViewModel : ObservableObject
             IncludeImages = value.IncludeImages;
             IncludeDirectoryStructure = value.IncludeDirectoryStructure;
 
-            // 2. Наполняем выпадающий список модулей
+            // 2. Наполняем выпадающий список модулей нового проекта
             Modules = new ObservableCollection<ContextModule>(value.Modules);
 
             var defaultModule = value.Modules.FirstOrDefault();
             if (defaultModule != null)
             {
-                // ИСПРАВЛЕНО: Вместо вызова удаленных методов напрямую инициализируем 
-                // нужный менеджер, передавая десериализованный объект 'value' напрямую!
-                bool isText = value.Type == ProjectType.GoogleDoc || value.Type == ProjectType.WordDoc;
-                if (isText)
-                {
-                    var bookManager = new BookTreeManager(value, defaultModule);
-                    FileSystemNode.ActiveManager = null;
-                    RootNode = bookManager.RootNode;
-                }
-                else
-                {
-                    var codeManager = new ProjectTreeManager(value, defaultModule);
-                    FileSystemNode.ActiveManager = codeManager;
-                    RootNode = codeManager.RootNode;
-                }
-
-                // Сдвигаем триггер селектора модуля в самый конец, когда дерево уже построено!
+                // КРИТИЧЕСКИЙ ШТРИХ (ТВОЙ АЛГОРИТМ): Мы ПОЛНОСТЬЮ УДАЛИЛИ отсюда 
+                // создание ProjectTreeManager и BookTreeManager! Метод больше не трогает RootNode.
+                // Мы просто выбираем первый модуль. Это автоматически, чисто и последовательно
+                // передаст управление в метод OnSelectedModuleChanged, исключая наложение потоков!
                 SelectedModule = defaultModule;
+            }
+            else
+            {
+                SelectedModule = null;
+                RootNode = null;
+                _activeTreeManager = null;
+                FileSystemNode.ActiveManager = null;
             }
         }
         else
         {
             Modules.Clear();
+            SelectedModule = null;
             RootNode = null;
+            _activeTreeManager = null;
             FileSystemNode.ActiveManager = null;
         }
+
         OnPropertyChanged(nameof(IsModuleSelectorEnabled));
         OnPropertyChanged(nameof(DisplayProjectName));
         OnPropertyChanged(nameof(RootNode));
@@ -596,31 +589,34 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            // ИСПРАВЛЕНО: Защищаем триггер от Race Condition. Если глобальный SelectedProject 
-            // еще пустой, мы берем родительский проект прямо из кэша активного списка!
+            // Защищаем триггер от Race Condition при быстрой смене проектов в ListBox
             var activeProject = SelectedProject ?? Projects.FirstOrDefault(p => p != null && p.Modules.Contains(value!));
 
             if (value != null && activeProject != null)
             {
+                // 1. Обновляем текстовые поля модуля
                 ModuleNameInput = value.ModuleName;
                 ContextFileName = value.ContextFileName;
                 ModuleRules = value.ModuleRules;
 
                 bool isTextProject = activeProject.Type == ProjectType.GoogleDoc || activeProject.Type == ProjectType.WordDoc;
 
+                // 2. ЕДИНСТВЕННЫЙ ИСТОЧНИК ИСТИНЫ: Строим дерево строго в один поток
                 if (isTextProject)
                 {
-                    // А) ЛИТЕРАТУРНЫЙ КОНВЕЙЕР: Строит полную структуру глав по твоему алгоритму
+                    // Литературный конвейер (GoogleDoc)
                     var bookManager = new BookTreeManager(activeProject, value);
-                    FileSystemNode.ActiveManager = null;
+                    FileSystemNode.ActiveManager = null; // Для книг Roslyn-мост не нужен
                     RootNode = bookManager.RootNode;
+                    _activeTreeManager = bookManager; // Фиксируем интерфейсный контракт
                 }
                 else
                 {
-                    // Б) ТЕХНИЧЕСКИЙ КОНВЕЙЕР: Строит структуру файлов репозитория C# / SQL
+                    // Технический конвейер (Код C# / SQL)
                     var codeManager = new ProjectTreeManager(activeProject, value);
-                    FileSystemNode.ActiveManager = codeManager;
+                    FileSystemNode.ActiveManager = codeManager; // Взводим Roslyn-мост ленивой загрузки
                     RootNode = codeManager.RootNode;
+                    _activeTreeManager = codeManager; // Фиксируем интерфейсный контракт
                 }
             }
             else if (value == null)
@@ -629,15 +625,20 @@ public partial class MainViewModel : ObservableObject
                 ContextFileName = string.Empty;
                 ModuleRules = string.Empty;
                 RootNode = null;
+                _activeTreeManager = null;
                 FileSystemNode.ActiveManager = null;
             }
+
+            // Уведомляем интерфейс и запускаем фоновый подсчет токенов
             OnPropertyChanged(nameof(RootNode));
+            _ = RecalculateContextSizeAsync();
         }
         finally
         {
             _isUpdatingFields = false;
         }
     }
+
 
 
 
@@ -648,20 +649,22 @@ public partial class MainViewModel : ObservableObject
             ? $"Проект {Projects.Count + 1}"
             : ProjectNameInput.Trim();
 
-        // 1. ВАЛИДАЦИЯ НА СПЕЦСИМВОЛЫ
         if (!IsValidName(name, out string validationError))
         {
-            System.Windows.MessageBox.Show(validationError, "Ошибка валидации",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(validationError, "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        // 2. ПРОВЕРКА НА ДУБЛИКАТЫ
+        // ИСПРАВЛЕНО: Локализация проверки на дубликаты проектов
         bool isDuplicate = Projects.Any(p => p.ProjectName.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (isDuplicate)
         {
-            System.Windows.MessageBox.Show($"Проект с названием \"{name}\" уже существует!", "Внимание",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            string errTemplate = Application.Current.Resources["Str_Err_ProjectDuplicate"] as string
+                ?? "Проект с названием \"{0}\" уже существует!";
+            string titleMsg = Application.Current.Resources["Str_Title_Warning"] as string
+                ?? "Внимание";
+
+            MessageBox.Show(string.Format(errTemplate, name), titleMsg, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -669,11 +672,11 @@ public partial class MainViewModel : ObservableObject
         Projects.Add(newProject);
         SelectedProject = newProject;
 
-        // 3. ОЧИСТКА И СОХРАНЕНИЕ
         ProjectNameInput = string.Empty;
         IsProjectNameInvalid = false;
         SilentSave();
     }
+
 
     // ================================================================= -->
     // ИСПРАВЛЕНО: БЕЗОПАСНОЕ СОЗДАНИЕ МОДУЛЯ БЕЗ СБРОСА ВЫДЕЛЕНИЯ UI    -->
@@ -1002,280 +1005,6 @@ public partial class MainViewModel : ObservableObject
         }
 
     }
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: АВТОНОМНЫЙ КАРКАСНЫЙ СБОРЩИК БЕЗ СВЯЗИ С ГЛОБАЛЬНЫМИ ПОЛЯМИ -->
-    // ================================================================= -->
-    private void BuildInitialTreeFromConfig(ProjectConfig project, ContextModule module)
-    {
-        if (project == null || module == null) return;
-
-        bool isTextProject = project.Type == ProjectType.GoogleDoc || project.Type == ProjectType.WordDoc;
-        string exactProjectRoot = project.RootPath;
-
-        // 1. Создаем локальный временный корень, полностью изолированный от потоков UI
-        var localRoot = new FileSystemNode
-        {
-            Name = project.ProjectName,
-            FullPath = isTextProject ? (RootNode?.FullPath ?? string.Empty) : exactProjectRoot,
-            RelativePath = string.Empty,
-            IsFile = false,
-            IsChecked = null // Папки и корни всегда в состоянии тристейт (null)
-        };
-
-        // 2. НАКАТЫВАЕМ ФАЙЛЫ, ВЫБРАННЫЕ ЦЕЛИКОМ (CheckedFiles)
-        if (!isTextProject && module.CheckedFiles != null)
-        {
-            foreach (var relPath in module.CheckedFiles)
-            {
-                if (string.IsNullOrEmpty(relPath)) continue;
-                EnsureLocalFileHierarchyBuiltExtended(localRoot, exactProjectRoot, relPath, isFullFile: true);
-            }
-        }
-
-        // 3. НАКАТЫВАЕМ ТОЧЕЧНЫЕ СИНТАКСИЧЕСКИЕ ЭЛЕМЕНТЫ (CheckedEntries)
-        if (module.CheckedEntries != null)
-        {
-            foreach (var entry in module.CheckedEntries)
-                if (entry != null)
-                {
-                    FileSystemNode? fileNode;
-                    if (isTextProject)
-                    {
-                        fileNode = localRoot;
-                    }
-                    else
-                    {
-                        if (string.IsNullOrEmpty(entry.FilePath)) continue;
-                        fileNode = EnsureLocalFileHierarchyBuiltExtended(localRoot, exactProjectRoot, entry.FilePath, isFullFile: false);
-                    }
-
-                    if (fileNode == null) continue;
-
-                    for (int i = fileNode.Children.Count - 1; i >= 0; i--)
-                    {
-                        if (fileNode.Children[i].Name == "LoadingStub...") fileNode.Children.RemoveAt(i);
-                    }
-
-                    var fileNodesMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
-                    BuildExistingNodesMap(fileNode, fileNodesMap);
-
-                    if (!fileNodesMap.ContainsKey(entry.EntryPath))
-                    {
-                        char syntaxSeparator = isTextProject ? '/' : '.';
-                        bool isContainer = isTextProject
-                            ? (entry.Type == EntryType.Tab)
-                            : (entry.Type == EntryType.Namespace || entry.Type == EntryType.Class || entry.Type == EntryType.Struct || entry.Type == EntryType.Interface);
-
-                        var newNode = new FileSystemNode
-                        {
-                            Name = entry.DisplayName.Trim(),
-                            RelativePath = fileNode.RelativePath, // Жестко привязываем к пути родительского файла!
-                            FullPath = fileNode.FullPath,
-                            IsFile = !isContainer,
-                            IsSyntaxNode = true,
-                            SyntaxType = entry.Type,
-                            SyntaxSpanInfo = entry.SpanInfo,
-                            EntryPath = entry.EntryPath,
-                            Parent = fileNode,
-                            IsExpanded = isContainer,
-                            IsChecked = !isContainer ? true : null
-                        };
-
-                        string parentEntryPath = string.Empty;
-                        int lastSeparator = entry.EntryPath.LastIndexOf(syntaxSeparator);
-                        if (lastSeparator > 0) parentEntryPath = entry.EntryPath.Substring(0, lastSeparator);
-
-                        if (!string.IsNullOrEmpty(parentEntryPath) && fileNodesMap.TryGetValue(parentEntryPath, out var parentContainerNode))
-                        {
-                            newNode.Parent = parentContainerNode;
-                            parentContainerNode.IsChecked = null;
-                            parentContainerNode.Children.Add(newNode);
-                        }
-                        else
-                        {
-                            fileNode.Children.Add(newNode);
-                        }
-                    }
-                    else
-                    {
-                        bool isContainer = isTextProject
-                            ? (entry.Type == EntryType.Tab)
-                            : (entry.Type == EntryType.Namespace || entry.Type == EntryType.Class || entry.Type == EntryType.Struct || entry.Type == EntryType.Interface);
-
-                        fileNodesMap[entry.EntryPath].IsChecked = !isContainer ? true : null;
-                    }
-                }
-        }
-
-        // 4. ТВОЙ АЛГОРИТМ СЛИЯНИЯ: Используем жесткий путь из конфига, полностью защищая от пустых строк!
-        if (!isTextProject && Directory.Exists(exactProjectRoot))
-        {
-            ContextBuilderService.MergeDirectoryWithConfigTree(exactProjectRoot, localRoot, exactProjectRoot);
-        }
-
-        // 5. Выполняем финальный сквозной расчет квадратиков Tri-State для собранной структуры
-        DeepVerifyCheckStates(localRoot);
-
-        // 6. АТОМАРНАЯ ПУБЛИКАЦИЯ: Дерево выводится на экран полностью готовым и размеченным!
-        RootNode = localRoot;
-        OnPropertyChanged(nameof(RootNode));
-    }
-
-    /// <summary>
-    /// Расширенный автономный построитель путей внутри локального временного корня
-    /// </summary>
-    private FileSystemNode? EnsureLocalFileHierarchyBuiltExtended(FileSystemNode localRoot, string exactProjectRoot, string relativePath, bool isFullFile)
-    {
-        if (string.IsNullOrEmpty(relativePath) || localRoot == null) return null;
-
-        string normalizedPath = relativePath.Replace('/', '\\');
-        string[] parts = normalizedPath.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
-
-        FileSystemNode currentParent = localRoot;
-        string currentRelativePath = string.Empty;
-
-        for (int i = 0; i < parts.Length; i++)
-        {
-            string partName = parts[i];
-            currentRelativePath = string.IsNullOrEmpty(currentRelativePath) ? partName : $"{currentRelativePath}\\{partName}";
-            bool isLastPart = (i == parts.Length - 1);
-
-            var existingChild = currentParent.Children.FirstOrDefault(c => c.Name.Equals(partName, StringComparison.OrdinalIgnoreCase) && c.IsFile == isLastPart);
-
-            if (existingChild == null)
-            {
-                var newNode = new FileSystemNode
-                {
-                    Name = partName,
-                    RelativePath = currentRelativePath,
-                    FullPath = Path.Combine(exactProjectRoot, currentRelativePath),
-                    IsFile = isLastPart,
-                    Parent = currentParent,
-                    IsChecked = (isLastPart && isFullFile) ? true : null
-                };
-
-                if (isLastPart && SyntaxParserFactory.IsSupported(Path.GetExtension(newNode.FullPath)))
-                {
-                    newNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = newNode, IsFile = true });
-                }
-
-                currentParent.Children.Add(newNode);
-                currentParent = newNode;
-            }
-            else
-            {
-                currentParent = existingChild;
-            }
-        }
-
-        return currentParent;
-    }
-
-
-    /// <summary>
-    /// Автономный построитель путей внутри локального временного корня
-    /// </summary>
-    private FileSystemNode? EnsureLocalFileHierarchyBuilt(FileSystemNode localRoot, string relativePath, bool isFullFile)
-    {
-        if (string.IsNullOrEmpty(relativePath) || localRoot == null) return null;
-
-        string normalizedPath = relativePath.Replace('/', '\\');
-        string[] parts = normalizedPath.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
-
-        FileSystemNode currentParent = localRoot;
-        string currentRelativePath = string.Empty;
-
-        for (int i = 0; i < parts.Length; i++)
-        {
-            string partName = parts[i];
-            currentRelativePath = string.IsNullOrEmpty(currentRelativePath) ? partName : $"{currentRelativePath}\\{partName}";
-            bool isLastPart = (i == parts.Length - 1);
-
-            var existingChild = currentParent.Children.FirstOrDefault(c => c.Name.Equals(partName, StringComparison.OrdinalIgnoreCase) && c.IsFile == isLastPart);
-
-            if (existingChild == null)
-            {
-                var newNode = new FileSystemNode
-                {
-                    Name = partName,
-                    RelativePath = currentRelativePath,
-                    FullPath = Path.Combine(RootPath, currentRelativePath),
-                    IsFile = isLastPart,
-                    Parent = currentParent,
-                    IsChecked = (isLastPart && isFullFile) ? true : null
-                };
-
-                if (isLastPart && SyntaxParserFactory.IsSupported(Path.GetExtension(newNode.FullPath)))
-                {
-                    newNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = newNode, IsFile = true });
-                }
-
-                currentParent.Children.Add(newNode);
-                currentParent = newNode;
-            }
-            else
-            {
-                currentParent = existingChild;
-            }
-        }
-
-        return currentParent;
-    }
-
-
-    /// <summary>
-    /// Вспомогательный метод упреждающего построения пути папок и файла в дереве каркаса
-    /// </summary>
-    private FileSystemNode? EnsureFileHierarchyBuilt(string relativePath, bool isFullFile)
-    {
-        if (string.IsNullOrEmpty(relativePath) || RootNode == null) return null;
-
-        string normalizedPath = relativePath.Replace('/', '\\');
-        string[] parts = normalizedPath.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
-
-        FileSystemNode currentParent = RootNode;
-        string currentRelativePath = string.Empty;
-
-        for (int i = 0; i < parts.Length; i++)
-        {
-            string partName = parts[i];
-            currentRelativePath = string.IsNullOrEmpty(currentRelativePath) ? partName : $"{currentRelativePath}\\{partName}";
-            bool isLastPart = (i == parts.Length - 1);
-
-            var existingChild = currentParent.Children.FirstOrDefault(c => c.Name.Equals(partName, StringComparison.OrdinalIgnoreCase) && c.IsFile == isLastPart);
-
-            if (existingChild == null)
-            {
-                var newNode = new FileSystemNode
-                {
-                    Name = partName,
-                    RelativePath = currentRelativePath,
-                    FullPath = Path.Combine(RootPath, currentRelativePath),
-                    IsFile = isLastPart,
-                    Parent = currentParent,
-                    // Если это последний сегмент (файл) и режим "целиком" - ставим True, во всех остальных случаях папки и частично выбранные файлы строго удерживают null!
-                    IsChecked = (isLastPart && isFullFile) ? true : null
-                };
-
-                if (isLastPart && SyntaxParserFactory.IsSupported(Path.GetExtension(newNode.FullPath)))
-                {
-                    newNode.Children.Add(new FileSystemNode { Name = "LoadingStub...", Parent = newNode, IsFile = true });
-                }
-
-                currentParent.Children.Add(newNode);
-                currentParent = newNode;
-            }
-            else
-            {
-                currentParent = existingChild;
-            }
-        }
-
-        return currentParent;
-    }
-
-
-
     // Вспомогательный метод для глубокой очистки синтаксических нод
     private void ClearSyntaxNodesRecursive(FileSystemNode node)
     {
@@ -1693,73 +1422,7 @@ public partial class MainViewModel : ObservableObject
         _cts?.Cancel();
         ProgressText = "Отмена операции...";
     }
-    // Пробегает по всему дереву до самых глубоких файлов и заставляет папки рассчитать свои квадратики снизу вверх
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: СКВОЗНОЙ ПЕРЕСЧЕТ TRI-STATE С УЧЕТОМ ЛЕНИВЫХ ЗАГЛУШЕК -->
-    // ================================================================= -->
-    private void DeepVerifyCheckStates(FileSystemNode node)
-    {
-        if (node == null) return;
-
-        // Сначала рекурсивно спускаемся к самым глубоким листьям дерева
-        var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy)
-        {
-            DeepVerifyCheckStates(child);
-        }
-
-        // Если это папка или физический файл на диске
-        if (!node.IsSyntaxNode && node.Children.Count > 0)
-        {
-            bool hasChecked = false;
-            bool hasUnchecked = false;
-            bool hasIndeterminate = false;
-            bool hasLoadingStub = false;
-
-            foreach (var child in node.Children)
-            {
-                if (child.Name == "LoadingStub...")
-                {
-                    hasLoadingStub = true;
-                    continue;
-                }
-
-                if (child.IsChecked == true) hasChecked = true;
-                else if (child.IsChecked == false) hasUnchecked = true;
-                else hasIndeterminate = true;
-            }
-
-            // ИСПРАВЛЕНО: Интеллектуальный тристейт-детектор для нераскрытых узлов
-            if (hasLoadingStub && SelectedModule?.CheckedEntries != null)
-            {
-                // Проверяем: если внутри этого нераскрытого файла есть хоть одна сохраненная запись в JSON —
-                // мы принудительно выставляем ему и его родительской папке статус тристейта (null)!
-                bool hasSavedEntriesInside = SelectedModule.CheckedEntries.Any(e =>
-                    e != null && !string.IsNullOrEmpty(e.FilePath) &&
-                    e.FilePath.StartsWith(node.RelativePath, StringComparison.OrdinalIgnoreCase));
-
-                if (hasSavedEntriesInside)
-                {
-                    node.IsChecked = null; // Закрашенный квадратик намертво!
-                    return;
-                }
-            }
-
-            // Стандартный каноничный пересчет Tri-State
-            if (hasIndeterminate) node.IsChecked = null;
-            else if (hasChecked && hasUnchecked) node.IsChecked = null;
-            else if (hasChecked) node.IsChecked = true;
-            else node.IsChecked = false;
-        }
-    }
-
-
-    // Полностью заменяем старую команду GenerateContext на асинхронную
-    // ================================================================= -->
-    // ЧАСТЬ 1: ИСПРАВЛЕННАЯ КОМАНДА ГЕНЕРАЦИИ С ЗАПУСКОМ ОВЕРЛЕЯ PROGRESS-->
-    // ================================================================= -->
-    // Внутри MainViewModel.cs
-
+   
     // ИСПРАВЛЕНО: Привязываем команду к методу проверки прав на выполнение
     [RelayCommand(CanExecute = nameof(CanGenerateContext))]
     private async Task GenerateContext()
@@ -1929,83 +1592,7 @@ public partial class MainViewModel : ObservableObject
             BuildExistingNodesMap(child, map);
         }
     }
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: НОРМАЛИЗАЦИЯ СЛЭШЕЙ ПРИ ИЕРАРХИЧЕСКОМ НАКАТЕ ГАЛОЧЕК  -->
-    // ================================================================= -->
-   
-    private void ApplyCodeCheckedFilesRecursive(FileSystemNode node, HashSet<string> savedFiles)
-    {
-        if (node == null) return;
-
-        if (node.IsFile && !string.IsNullOrEmpty(node.RelativePath))
-        {
-            // ИСПРАВЛЕНО: Приводим текущий путь из дерева к стандарту '/' перед поиском в хэш-сете
-            string cleanNodePath = node.RelativePath.Replace('\\', '/');
-            if (savedFiles.Contains(cleanNodePath))
-            {
-                node.SetChecked(true, updateChildren: false, updateParent: false);
-            }
-        }
-
-        var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy)
-        {
-            ApplyCodeCheckedFilesRecursive(child, savedFiles);
-        }
-    }
-
-    /// <summary>
-    /// Рекурсивный каскадный пересчет состояний чекбоксов Tri-State снизу вверх
-    /// </summary>
-    private void DeepVerifyAllCheckStates(FileSystemNode node)
-    {
-        if (node == null) return;
-
-        // Сначала уходим в самую глубь дерева к последним потомкам
-        foreach (var child in node.Children)
-        {
-            DeepVerifyAllCheckStates(child);
-        }
-
-        // Когда вернулись снизу, принудительно заставляем текущий узел 
-        // пересчитать свой статус на основе реального состояния его детей
-        node.VerifyCheckState();
-    }
-
-    // Вспомогательный рекурсивный метод поиска нод по EntryPath и активации галочек
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ДВУХКАНАЛЬНАЯ ПРОВЕРКА ПУТЕЙ (С ТОЧКОЙ И СО СЛЭШЕМ)    -->
-    // ================================================================= -->
-    private void ApplyCheckedStatesFromConfigRecursive(FileSystemNode node, HashSet<string> savedPaths)
-    {
-        if (node == null) return;
-
-        // 1. Нормализуем путь текущего узла из дерева (заменяем наклоны слэшей)
-        string cleanNodePath = node.EntryPath.Replace('\\', '/');
-
-        // 2. ИСПРАВЛЕНО: Создаем альтернативный вариант пути на случай, если в JSON 
-        // точка на конце превратилась в слэш: "Среди людей - основной текст/Глава 1/"
-        string alternativeNodePath = cleanNodePath;
-        if (cleanNodePath.EndsWith("."))
-        {
-            // Отрезаем точку и принудительно дописываем слэш, имитируя баг сохранения
-            alternativeNodePath = cleanNodePath.Substring(0, cleanNodePath.Length - 1) + "/";
-        }
-
-        // 3. Проверяем вхождение по любому из двух каналов адресации
-        if (node.IsSyntaxNode && (savedPaths.Contains(cleanNodePath) || savedPaths.Contains(alternativeNodePath)))
-        {
-            node.SetChecked(true, updateChildren: false, updateParent: false);
-        }
-
-        // Рекурсивно уходим вглубь по коллекции вкладок и глав романа
-        foreach (var child in node.Children)
-        {
-            ApplyCheckedStatesFromConfigRecursive(child, savedPaths);
-        }
-    }
-
-
+    
     // Флаги управления видимостью и состоянием оверлея проектов
     [ObservableProperty] private bool _isProjectOverlayVisible;
     [ObservableProperty] private bool _isLocalProjectSelected = true; // RadioButton: Локальная папка

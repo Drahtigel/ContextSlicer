@@ -128,5 +128,11 @@
     <system:String x:Key="Str_Err_PdfSaveFailed">Failed to save the PDF document:</system:String>
     <system:String x:Key="Str_IncludeImages">Include images in PDF</system:String>
     <system:String x:Key="Str_Err_ModuleDuplicate">A module with this name already exists in this project!</system:String>
+    <!-- New validation strings for modules and projects (EN) -->
+    <system:String x:Key="Str_Msg_ConfirmDeleteModule">Are you sure you want to completely delete this module and all its saved file settings?</system:String>
+    <system:String x:Key="Str_Title_DeleteModule">Delete Module</system:String>
+    <system:String x:Key="Str_Err_ProjectNameEmpty">Project name cannot be empty or consist only of spaces.</system:String>
+    <system:String x:Key="Str_Err_ProjectDuplicate">A project with the name "{0}" already exists!</system:String>
+    <system:String x:Key="Str_Err_ModuleNameEmpty">Module name cannot be empty!</system:String>
 
 </ResourceDictionary>

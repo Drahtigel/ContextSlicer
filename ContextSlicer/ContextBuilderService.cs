@@ -276,7 +276,8 @@ public static class ContextBuilderService
     // ================================================================= -->
     private static async Task<StringBuilder> BuildCodeTextContextAsync(
         string promptRules, string moduleRules, bool includeDirectoryStructure,
-        List<FileSystemNode> checkedFiles, List<SyntaxEntry> checkedEntries, CancellationToken token)
+        List<FileSystemNode> checkedFiles, List<SyntaxEntry> checkedEntries, 
+        CancellationToken token)
     {
         var sb = new StringBuilder();
         if (checkedFiles == null || checkedFiles.Count == 0) return sb;

@@ -560,7 +560,7 @@
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type local:FileSystemNode}" ItemsSource="{Binding Children}">
                             <StackPanel Orientation="Horizontal" Margin="2">
-                                <CheckBox IsChecked="{Binding IsChecked}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <CheckBox IsChecked="{Binding ComputedState}" VerticalAlignment="Center" Margin="0,0,6,0"/>
 
                                 <!-- Префикс синтаксиса (NS, CLS, FUNC, PROP): Текст берется из свойства TypePrefixText -->
                                 <!-- Цвет жестко привязан к DynamicResource AccentBrush для идеального контраста в любой теме -->
@@ -672,7 +672,7 @@
                     <TextBlock Text="{Binding TotalCharacters, FallbackValue=0}" Foreground="{DynamicResource TextBrush}" FontSize="14" FontWeight="Bold" Margin="0,0,20,0"/>
 
                     <TextBlock Text="{DynamicResource Str_StatsTokens}" Foreground="{DynamicResource TextBrush}" FontSize="13" FontWeight="SemiBold"/>
-                    <TextBlock Text="{Binding TotalTokens, FallbackValue=0}" Foreground="#4CAF50" FontSize="14" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding EstimatedTokens, FallbackValue=0}" Foreground="#4CAF50" FontSize="14" FontWeight="Bold"/>
                 </StackPanel>
             </Grid>
 
