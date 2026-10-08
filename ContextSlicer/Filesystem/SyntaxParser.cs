@@ -133,16 +133,25 @@ public static class SyntaxParserFactory
     {
         if (string.IsNullOrEmpty(ext)) return null;
 
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: РЕГИСТРАЦИЯ ПАРСЕРА WORD В ЯДРЕ ФАБРИКИ ПАРСЕРОВ     -->
+        // ================================================================= -->
         if (ext.Equals(".gdoc", StringComparison.OrdinalIgnoreCase))
         {
             return new GoogleDocSyntaxParser();
         }
 
-        if (ext.Equals(".docx", StringComparison.OrdinalIgnoreCase) ||
-            ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
+        // ДОБАВЛЕНО: При обнаружении расширения .docx фабрика мгновенно возвращает наш новый парсер
+        if (ext.Equals(".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            return new WordDocumentParser();
+        }
+
+        if (ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
         {
             return new TextDocumentParser();
         }
+
 
         // Ваша существующая логика выбора парсеров для кода исходников:
         return ext.ToLower() switch

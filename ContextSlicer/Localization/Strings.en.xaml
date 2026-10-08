@@ -134,5 +134,13 @@
     <system:String x:Key="Str_Err_ProjectNameEmpty">Project name cannot be empty or consist only of spaces.</system:String>
     <system:String x:Key="Str_Err_ProjectDuplicate">A project with the name "{0}" already exists!</system:String>
     <system:String x:Key="Str_Err_ModuleNameEmpty">Module name cannot be empty!</system:String>
-
+    <!-- Project save paths validation strings (EN) -->
+    <system:String x:Key="Str_Err_FolderNotExists">The specified local data source folder does not exist!</system:String>
+    <system:String x:Key="Str_Err_WordNotExists">The specified MS Word file was not found on the disk!</system:String>
+    <!-- Context generation progress strings (EN) -->
+    <system:String x:Key="Str_Update_PreparingElements">Preparing to process {0} elements...</system:String>
+    <!-- Context generation error strings (EN) -->
+    <system:String x:Key="Str_Msg_OperationCanceled">Context build operation was canceled by the user.</system:String>
+    <system:String x:Key="Str_Msg_BuildError">File build error: {0}</system:String>
+    <system:String x:Key="Str_Title_Error">Error</system:String>
 </ResourceDictionary>

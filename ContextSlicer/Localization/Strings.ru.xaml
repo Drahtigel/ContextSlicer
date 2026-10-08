@@ -135,5 +135,13 @@
     <system:String x:Key="Str_Err_ProjectNameEmpty">Имя проекта не может быть пустым или состоять только из пробелов.</system:String>
     <system:String x:Key="Str_Err_ProjectDuplicate">Проект с названием "{0}" уже существует!</system:String>
     <system:String x:Key="Str_Err_ModuleNameEmpty">Имя модуля не может быть пустым!</system:String>
-
+    <!-- Строки валидации путей при сохранении карточки проекта (RU) -->
+    <system:String x:Key="Str_Err_FolderNotExists">Указанная локальная папка источника данных не существует!</system:String>
+    <system:String x:Key="Str_Err_WordNotExists">Указанный файл MS Word не найден на диске!</system:String>
+    <!-- Строки прогресса генерации контекста (RU) -->
+    <system:String x:Key="Str_Update_PreparingElements">Подготовка к обработке {0} элементов...</system:String>
+    <!-- Строки ошибок оверлея генерации (RU) -->
+    <system:String x:Key="Str_Msg_OperationCanceled">Операция сборки контекста была отменена пользователем.</system:String>
+    <system:String x:Key="Str_Msg_BuildError">Ошибка сборки файла: {0}</system:String>
+    <system:String x:Key="Str_Title_Error">Ошибка</system:String>
 </ResourceDictionary>

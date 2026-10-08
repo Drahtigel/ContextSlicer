@@ -244,33 +244,190 @@ public static class ContextBuilderService
             checkedFiles, savedEntries, progressHandler, ProjectType.Folder, false, token);
     }
 
-    /// <summary>
-    /// ГЛАВНЫЙ ДИСПЕТЧЕР (ПЕРЕГРУЗКА 2): Принимает полный набор параметров и жестко
-    /// изолирует обработку книг от исходного кода на уровне вызовов функций.
-    /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ТРЕХКАНАЛЬНЫЙ ДИСПЕТЧЕР СБОРКИ (КОД / GOOGLE / WORD)  -->
+    // ================================================================= -->
     public static async Task<StringBuilder> BuildTextContentAsync(
         string promptRules, string moduleRules, bool includeDirectoryStructure,
         List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries,
         IProgress<ProgressReport> progressHandler, ProjectType projectType,
         bool includeImages, CancellationToken token)
     {
-        bool isActuallyLiterary = projectType == ProjectType.GoogleDoc ||
-                                 projectType == ProjectType.WordDoc ||
-                                 savedEntries.Any(e => e.Type == EntryType.Tab);
-
-        if (isActuallyLiterary)
+        // 1. Если это проект Google Doc
+        if (projectType == ProjectType.GoogleDoc)
         {
-            // Огород разделен: Книги уходят в свой персональный метод
             return await BuildGoogleDocTextContextAsync(includeDirectoryStructure, includeImages, checkedFiles, savedEntries, token);
         }
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ЖЕСТКОЕ ИЗВЛЕЧЕНИЕ АБСОЛЮТНОГО ПУТИ ИЗ КОРНЯ ДЕРЕВА WORD -->
+        // ================================================================= -->
+        else if (projectType == ProjectType.WordDoc)
+        {
+            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Больше никаких пустых строк! 
+            // Забираем абсолютный путь к .docx файлу напрямую из FullPath корневого узла дерева.
+            string wordFilePath = checkedFiles.FirstOrDefault()?.FullPath
+                ?? savedEntries.FirstOrDefault(e => !string.IsNullOrEmpty(e.FilePath))?.FilePath
+                ?? string.Empty;
+
+            // Железный фолбэк: если списки пусты (как в нашем случае), берем путь из системного маппинга менеджера кода,
+            // либо подтянем его на следующем шаге из rootNode.
+            if (string.IsNullOrEmpty(wordFilePath) && checkedFiles.Count > 0)
+                wordFilePath = checkedFiles[0].FullPath;
+
+            return await BuildWordTextContextAsync(includeDirectoryStructure, includeImages, promptRules, moduleRules, wordFilePath, savedEntries, token);
+        }
+        // 3. Во всех остальных случаях — это проект исходного кода (C# / SQL)
         else
         {
-            // Исходный код уходит в свой чистый технический метод
-            // ИСПРАВЛЕНО CS7036: Добавлен обязательный параметр token в конец вызова
             return await BuildCodeTextContextAsync(promptRules, moduleRules, includeDirectoryStructure, checkedFiles, savedEntries, token);
-          //  return await BuildCodeTextContextAsync(promptRules, moduleRules, includeDirectoryStructure, checkedFiles, token);
         }
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ВЫСОКОПРОИЗВОДИТЕЛЬНЫЙ ЯДЕРНЫЙ СБОРЩИК ТЕКСТА ИЗ DOCX -->
+    // ================================================================= -->
+    private static async Task<StringBuilder> BuildWordTextContextAsync(
+        bool includeDirectoryStructure, bool includeImages, string promptRules, string moduleRules,
+        string docxPath, List<SyntaxEntry> checkedEntries, CancellationToken token)
+    {
+        var sb = new StringBuilder();
+        if (string.IsNullOrEmpty(docxPath) || !File.Exists(docxPath) || checkedEntries == null || checkedEntries.Count == 0) return sb;
+
+        // 1. Выгрузка системных правил промпта
+        if (!string.IsNullOrWhiteSpace(promptRules) || !string.IsNullOrWhiteSpace(moduleRules))
+        {
+            sb.AppendLine("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===");
+            if (!string.IsNullOrWhiteSpace(promptRules)) sb.AppendLine("<project_rules>" + promptRules.Trim() + "</project_rules>\n");
+            if (!string.IsNullOrWhiteSpace(moduleRules)) sb.AppendLine("<module_rules>" + moduleRules.Trim() + "</module_rules>\n");
+        }
+
+        // Хэш-сет выбранных путей глав для O(1) поиска
+        var selectedPathsSet = new HashSet<string>(checkedEntries.Select(e => e.EntryPath), StringComparer.OrdinalIgnoreCase);
+
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ПОЛНАЯ СИНХРОНИЗАЦИЯ СБОРЩИКА WORD С ТЕГАМИ ID И LEVEL -->
+        // ================================================================= -->
+        // 2. Генерация оглавления с честными атрибутами level, type и id!
+        if (includeDirectoryStructure)
+        {
+            sb.AppendLine("<document_structure>");
+            sb.AppendLine("  <ul id=\"toc_root\">");
+            foreach (var entry in checkedEntries)
+            {
+                // Рассчитываем ID строго по хэшу пути
+                string elementId = "h_" + Convert.ToUInt32(entry.EntryPath.GetHashCode()).ToString("x8");
+                int currentLevel = entry.EntryPath.Count(f => f == '/');
+
+                sb.AppendLine($"    <li level=\"{currentLevel}\" type=\"heading\" id=\"{elementId}\">{entry.DisplayName}</li>");
+            }
+            sb.AppendLine("  </ul id=\"toc_root\">");
+            sb.AppendLine("</document_structure>\n");
+        }
+
+        // 3. Вычитываем контент документа в фоновом режиме OpenXML
+        await Task.Run(() =>
+        {
+            try
+            {
+                using (var wordDoc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(docxPath, false))
+                {
+                    var mainPart = wordDoc.MainDocumentPart;
+                    if (mainPart == null || mainPart.Document == null || mainPart.Document.Body == null) return;
+
+                    string currentChapterPath = string.Empty;
+                    var activePaths = new Dictionary<int, string> { { 0, string.Empty } };
+                    var bodyElements = mainPart.Document.Body.ChildElements;
+
+                    foreach (var element in bodyElements)
+                    {
+                        token.ThrowIfCancellationRequested();
+
+                        if (element is DocumentFormat.OpenXml.Wordprocessing.Paragraph paragraph)
+                        {
+                            var textNodes = paragraph.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().ToList();
+
+                            string pText = string.Concat(textNodes.Select(t => t.Text ?? string.Empty))
+                                             .Replace("\r", "")
+                                             .Replace("\n", "")
+                                             .Replace("\u00A0", " ");
+
+                            string styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? string.Empty;
+                            string cleanStyleId = styleId.Replace(" ", "");
+
+                            bool isHeading = !string.IsNullOrEmpty(cleanStyleId) &&
+                                             (cleanStyleId.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) ||
+                                              cleanStyleId.StartsWith("Заголовок", StringComparison.OrdinalIgnoreCase));
+
+                            if (isHeading)
+                            {
+                                string levelDigits = new string(cleanStyleId.Where(char.IsDigit).ToArray());
+                                if (!int.TryParse(levelDigits, out int level)) level = 1;
+
+                                string headingText = pText.Trim();
+                                if (!string.IsNullOrEmpty(headingText))
+                                {
+                                    int targetParentLevel = level - 1;
+                                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel)) targetParentLevel--;
+
+                                    string parentPath = activePaths[targetParentLevel];
+                                    currentChapterPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
+
+                                    activePaths[level] = currentChapterPath;
+                                    var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
+                                    foreach (var key in keysToRemove) activePaths.Remove(key);
+
+                                    // ИСПРАВЛЕНО: Генерируем точно такой же ID, связывая заголовок тела с оглавлением!
+                                    if (selectedPathsSet.Contains(currentChapterPath))
+                                    {
+                                        string elementId = "h_" + Convert.ToUInt32(currentChapterPath.GetHashCode()).ToString("x8");
+                                        sb.AppendLine($"<heading id=\"{elementId}\" path=\"{currentChapterPath}\">");
+                                        sb.AppendLine($"  {headingText}");
+                                    }
+                                }
+                            }
+                            else if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath) && !string.IsNullOrWhiteSpace(pText))
+                            {
+                                sb.AppendLine($"  {pText.Trim()}");
+                            }
+                        }
+                        else if (element is DocumentFormat.OpenXml.Wordprocessing.Table table)
+                        {
+                            if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
+                            {
+                                sb.AppendLine("  <table>");
+                                foreach (var row in table.Descendants<DocumentFormat.OpenXml.Wordprocessing.TableRow>())
+                                {
+                                    sb.AppendLine("    <tr>");
+                                    foreach (var cell in row.Descendants<DocumentFormat.OpenXml.Wordprocessing.TableCell>())
+                                    {
+                                        string cellText = string.Concat(cell.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().Select(t => t.Text))
+                                                                .Replace("\r", "")
+                                                                .Replace("\n", "")
+                                                                .Trim();
+                                        sb.AppendLine($"      <td>{cellText}</td>");
+                                    }
+                                    sb.AppendLine("    </tr>");
+                                }
+                                sb.AppendLine("  </table>");
+                            }
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
+                    {
+                        sb.AppendLine("</heading>");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Word Context Build Error] {ex.Message}");
+            }
+        });
+
+        return sb;
+    }
+
+
     // ================================================================= -->
     // ИСПРАВЛЕНО: ХИРУРГИЧЕСКИЙ СБОР ФУНКЦИЙ КОДА ПО КООРДИНАТАМ SPAN   -->
     // ================================================================= -->
@@ -465,10 +622,7 @@ public static class ContextBuilderService
     }
 
     // ================================================================= -->
-    // ИСПРАВЛЕНО: МАТЕМАТИЧЕСКИ ТОЧНЫЙ ДИСПЕТЧЕР МАРШРУТИЗАЦИИ PDF      -->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: АДАПТИВНАЯ ВАЛИДАЦИЯ ВХОДА БЕЗ ЛОЖНЫХ RETURN ДЛЯ КОДА -->
+    // ИСПРАВЛЕНО: ТРЕХКАНАЛЬНАЯ МАРШРУТИЗАЦИЯ PDF ГЕНЕРАТОРА (КОД/GOOGLE/WORD) -->
     // ================================================================= -->
     public static async Task GeneratePdfContextFileAsync(
         string outputPath, string fileName, string promptRules, string moduleRules,
@@ -476,28 +630,26 @@ public static class ContextBuilderService
         List<SyntaxEntry> checkedEntries, IProgress<ProgressReport> progressHandler,
         ProjectType projectType, CancellationToken token)
     {
-        // Базовая жесткая защита на null критических параметров путей диска
         if (string.IsNullOrWhiteSpace(outputPath) || string.IsNullOrWhiteSpace(fileName) || rootNode == null) return;
 
-        // Интеллектуально определяем, является ли целевой проект литературным (книгой)
+        // Интеллектуально определяем, является ли целевой проект ЛИТЕРАТОРНЫМ (Google Doc или MS Word)
         bool isTargetLiterary = (projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc);
 
         if (isTargetLiterary)
         {
-            // ДЛЯ КНИГ: Требуем, чтобы список глав и вкладок в CheckedEntries не был пустым
             if (checkedEntries == null || checkedEntries.Count == 0) return;
 
-            // Конвейер Книг: Уходит в свой изолированный метод с графикой
+            // Конвейер Книг: Уходит в свой метод с графикой. 
+            // Сюда теперь направляются и проекты Google Docs, и локальные файлы MS Word!
             await GenerateGoogleDocPdfAsync(outputPath, fileName, promptRules, moduleRules, includeDirectoryStructure, includeImages, rootNode, checkedEntries, token);
         }
         else
         {
-            // ДЛЯ ИСХОДНОГО КОДА: Нам абсолютно ВСЕ РАВНО, пустой ли checkedEntries! 
-            // Главное, чтобы были выбраны файлы на диске. Проверка выполнится внутри BuildCodeTextContextAsync.
-            // Конвейер Кода: ТЕПЕРЬ ГАРАНТИРОВАННО И ВСЕГДА ВЫЗЫВАЕТ МЕТОД ОТРЕСОВКИ ИСХОДНИКОВ C#/SQL!
+            // Конвейер Кода: Вызывает метод отрисовки исходников C#/SQL
             await GenerateCodePdfAsync(outputPath, fileName, promptRules, moduleRules, includeDirectoryStructure, rootNode, checkedEntries, progressHandler, token);
         }
     }
+
 
     // ================================================================= -->
     // ИСПРАВЛЕНО: НЕУЯЗВИМЫЙ ИЗДАТЕЛЬСКИЙ PDF-РЕНДЕРЕР ИСХОДНОГО КОДА   -->
@@ -566,6 +718,9 @@ public static class ContextBuilderService
     /// <summary>
     /// КОНВЕЙЕР КНИГ: Строит PDF для прозы с полной поддержкой разметки, ID и автоконвертации Progressive JPEG/WebP
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: РАЗДЕЛЕНИЕ СБОРКИ ТЕКСТА ДЛЯ PDF (GOOGLE JSON / WORD DOCX) -->
+    // ================================================================= -->
     private static async Task GenerateGoogleDocPdfAsync(
         string outputPath, string fileName, string promptRules, string moduleRules,
         bool includeDirectoryStructure, bool includeImages, FileSystemNode rootNode,
@@ -582,7 +737,20 @@ public static class ContextBuilderService
             }
         }
 
-        string metaDataText = await GoogleDocBuilder.BuildContextTextAsync(checkedEntries, bookRootPath, includeDirectoryStructure, includeImages, token);
+        string metaDataText = string.Empty;
+
+        // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Если генерируем PDF для Word — вызываем наш чистый BuildWordTextContextAsync!
+        // Если для Google Docs — вызываем стандартный GoogleDocBuilder. Это полностью убирает ошибку парсинга JSON!
+        if (bookRootPath.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            var sbWord = await BuildWordTextContextAsync(includeDirectoryStructure, includeImages, promptRules, moduleRules, bookRootPath, checkedEntries, token);
+            metaDataText = sbWord.ToString();
+        }
+        else
+        {
+            metaDataText = await GoogleDocBuilder.BuildContextTextAsync(checkedEntries, bookRootPath, includeDirectoryStructure, includeImages, token);
+        }
+
         if (string.IsNullOrWhiteSpace(metaDataText)) return;
 
         var document = new MigraDoc.DocumentObjectModel.Document();
@@ -601,11 +769,25 @@ public static class ContextBuilderService
             if (!string.IsNullOrWhiteSpace(moduleRules)) { currentSection.AddParagraph("<module_rules>"); currentSection.AddParagraph(moduleRules.Trim()); currentSection.AddParagraph("</module_rules>\n"); }
         }
 
-        string googleDocId = !string.IsNullOrEmpty(bookRootPath) ? Path.GetFileNameWithoutExtension(bookRootPath) : string.Empty;
-        string imagesDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", "images", googleDocId);
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: УНИВЕРСАЛЬНЫЙ ДЕТЕКТОР ПАПОК ДЛЯ ВСТРОЕННЫХ КАРТИНОК WORD -->
+        // ================================================================= -->
+        // Вычисляем имя подпапки с изображениями на основе имени файла (без расширения .json или .docx)
+        string docIdentifier = !string.IsNullOrEmpty(bookRootPath)
+            ? Path.GetFileNameWithoutExtension(bookRootPath)
+            : string.Empty;
 
-        // Вызываем нашу Часть 2.1 — изолированный построчный XML/HTML парсер списков и графики
-        await ProcessPdfLinesAndSaveAsync(metaDataText, document, currentSection, imagesDir, googleDocId, includeImages, outputPath, fileName, token);
+        // Если это путь к локальному файлу .docx, берем его имя напрямую
+        if (bookRootPath.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            docIdentifier = Path.GetFileNameWithoutExtension(bookRootPath);
+        }
+
+        string imagesDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", "images", docIdentifier);
+
+        // Передаем управление в построчный XML/HTML парсер списков и графики, прокидывая docIdentifier вместо старого googleDocId
+        await ProcessPdfLinesAndSaveAsync(metaDataText, document, currentSection, imagesDir, docIdentifier, includeImages, outputPath, fileName, token);
+
     }
 
 
@@ -616,28 +798,50 @@ public static class ContextBuilderService
         section.PageSetup.LeftMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(2);
         section.PageSetup.RightMargin = MigraDoc.DocumentObjectModel.Unit.FromCentimeter(2);
     }
-    // Асинхронная генерация обычного TXT с поддержкой синтаксических записей
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ГАРАНТИРОВАННЫЙ ПРОБРОС ПУТИ К КЭШУ ДЛЯ GOOGLE И WORD В TXT -->
+    // ================================================================= -->
     public static async Task GenerateContextFileAsync(
-        string outputPath,
-        string fileName,
-        string projectRules,
-        string moduleRules,
-        bool includeDirectoryStructure,
-        FileSystemNode rootNode,
-        List<SyntaxEntry> savedEntries, // ИСПРАВЛЕНО: Добавлен параметр в сигнатуру метода
-        IProgress<ProgressReport> progress,
-        CancellationToken token)
+        string outputPath, string fileName, string projectRules, string moduleRules,
+        bool includeDirectoryStructure, FileSystemNode rootNode,
+        List<SyntaxEntry> savedEntries, IProgress<ProgressReport> progress,
+        ProjectType projectType, CancellationToken token)
     {
         var checkedFiles = new List<FileSystemNode>();
-        GetCheckedFilesExtended(rootNode, checkedFiles); // Используем расширенный сбор
+        GetCheckedFilesExtended(rootNode, checkedFiles);
 
-        // ИСПРАВЛЕНО: Передаем savedEntries, полученный из параметров метода
+        // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Если это ЛИТЕРАТУРНЫЙ проект (Google Docs или MS Word) —
+        // принудительно добавляем корень дерева в список checkedFiles.
+        // Это гарантирует, что методы BuildWordTextContextAsync и BuildGoogleDocTextContextAsync
+        // увидят правильный абсолютный FullPath к файлу кэша или документа на диске!
+        bool isLiterary = projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc;
+        if (isLiterary && rootNode != null)
+        {
+            if (!checkedFiles.Contains(rootNode))
+            {
+                checkedFiles.Add(rootNode);
+            }
+        }
+
         var sb = await BuildTextContentAsync(projectRules, moduleRules, includeDirectoryStructure,
-            checkedFiles, savedEntries, progress, token);
+            checkedFiles, savedEntries, progress, projectType, false, token);
 
-        string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".txt") ? fileName : fileName + ".txt");
+        // Перед физической записью на диск жестко проверяем StringBuilder на пустоту
+        if (sb == null || sb.Length == 0 || string.IsNullOrWhiteSpace(sb.ToString().Replace("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===", "").Trim()))
+        {
+            throw new InvalidOperationException("Сгенерированный контекст пуст! Проверьте, выбраны ли главы структуры на UI.");
+        }
+
+        string fullOutputPath = Path.Combine(outputPath, fileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ? fileName : fileName + ".txt");
         await File.WriteAllTextAsync(fullOutputPath, sb.ToString(), Encoding.UTF8, token);
+
+        if (File.Exists(fullOutputPath))
+        {
+            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullOutputPath}\"");
+        }
     }
+
+
 
     // ================================================================= -->
     // ЧАСТЬ 2.1: МЕЖДУНАРОДНЫЙ PDF-ПАРСЕР HTML-СПИСКОВ И ОГЛАВЛЕНИЯ    -->

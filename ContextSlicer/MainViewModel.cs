@@ -491,31 +491,38 @@ public partial class MainViewModel : ObservableObject
         // 2. ПОЛИМОРФНЫЙ ПЕРЕЗАПУСК МЕНЕДЖЕРОВ (ИСПРАВЛЕНО): 
         // Полностью удален весь дублирующий мусор, который слепо вызывал ProjectTreeManager для всех подряд!
         // Теперь после обновления диска или облачного кэша строго создается нужный менеджер дерева.
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ СТРУКТУРЫ С УЧЕТОМ ЛОКАЛЬНЫХ ФАЙЛОВ WORD -->
+        // ================================================================= -->
         if (SelectedProject != null && SelectedModule != null)
         {
-            bool isText = SelectedProject.Type == ProjectType.GoogleDoc || SelectedProject.Type == ProjectType.WordDoc;
-
-            if (isText)
+            if (SelectedProject.Type == ProjectType.GoogleDoc)
             {
-                // Вызываем изолированный менеджер прозы для перечитывания свежего JSON-кэша книг
                 var bookManager = new BookTreeManager(SelectedProject, SelectedModule);
-                FileSystemNode.ActiveManager = null; // Для книг Roslyn-мост не нужен
+                FileSystemNode.ActiveManager = null;
                 RootNode = bookManager.RootNode;
-                _activeTreeManager = bookManager; // Фиксируем мост для мгновенного пересчета токенов!
+                _activeTreeManager = bookManager;
+            }
+            // ДОБАВЛЕНО: Принудительное перечитывание файла Word с диска при клике на ↻
+            else if (SelectedProject.Type == ProjectType.WordDoc)
+            {
+                var wordManager = new WordTreeManager(SelectedProject, SelectedModule);
+                FileSystemNode.ActiveManager = null;
+                RootNode = wordManager.RootNode;
+                _activeTreeManager = wordManager;
             }
             else
             {
-                // Вызываем технический менеджер для пересбора исходного кода проекта C# / SQL
                 var codeManager = new ProjectTreeManager(SelectedProject, SelectedModule);
-                FileSystemNode.ActiveManager = codeManager; // Взводим Roslyn-мост ленивой загрузки
+                FileSystemNode.ActiveManager = codeManager;
                 RootNode = codeManager.RootNode;
-                _activeTreeManager = codeManager; // Фиксируем мост кода
+                _activeTreeManager = codeManager;
             }
 
-            // Уведомляем интерфейс WPF о замене корня дерева и принудительно пинаем асинхронный расчет токенов
             OnPropertyChanged(nameof(RootNode));
             _ = RecalculateContextSizeAsync();
         }
+
 
         string successMsg = Application.Current.Resources["Str_Status_ProjectSaved"] as string
                             ?? "Синхронизация структуры успешно завершена!";
@@ -524,23 +531,15 @@ public partial class MainViewModel : ObservableObject
                               ?? "Успех";
         MessageBox.Show(successMsg, successTitle, MessageBoxButton.OK, MessageBoxImage.Information);
     }
-
-
-
     // ================================================================= -->
-    // ИСПРАВЛЕНО: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК РАЗДЕЛЕННЫХ МЕНЕДЖЕРОВ   -->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ПОЛНОЕ ИСКЛЮЧЕНИЕ ГОНКИ И ЗАЦИКЛИВАНИЯ ПРИ СМЕНЕ ПРОЕКТОВ -->
+    // ИСПРАВЛЕНО: ОТРИСОВКА БАЗОВОГО ДЕРЕВА ДО СОЗДАНИЯ МОДУЛЕЙ         -->
     // ================================================================= -->
     partial void OnSelectedProjectChanged(ProjectConfig? value)
     {
-        // ЖЕСТКАЯ ЗАЩИТА: Если мы уже находимся внутри процесса обновления полей — выходим сразу
         if (_isUpdatingFields) return;
 
         if (value != null)
         {
-            // 1. Просто обновляем локальные текстовые поля ввода на UI
             ProjectNameInput = value.ProjectName;
             RootPath = value.RootPath;
             OutputPath = value.OutputPath;
@@ -548,24 +547,20 @@ public partial class MainViewModel : ObservableObject
             IncludeImages = value.IncludeImages;
             IncludeDirectoryStructure = value.IncludeDirectoryStructure;
 
-            // 2. Наполняем выпадающий список модулей нового проекта
             Modules = new ObservableCollection<ContextModule>(value.Modules);
 
             var defaultModule = value.Modules.FirstOrDefault();
-            if (defaultModule != null)
+
+            // ИСПРАВЛЕНО: Если модулей в проекте нет вообще, мы принудительно 
+            // собираем дерево по умолчанию прямо здесь, чтобы пользователь видел структуру!
+            if (defaultModule == null)
             {
-                // КРИТИЧЕСКИЙ ШТРИХ (ТВОЙ АЛГОРИТМ): Мы ПОЛНОСТЬЮ УДАЛИЛИ отсюда 
-                // создание ProjectTreeManager и BookTreeManager! Метод больше не трогает RootNode.
-                // Мы просто выбираем первый модуль. Это автоматически, чисто и последовательно
-                // передаст управление в метод OnSelectedModuleChanged, исключая наложение потоков!
-                SelectedModule = defaultModule;
+                SelectedModule = null;
+                BuildTreeForNoModule(value);
             }
             else
             {
-                SelectedModule = null;
-                RootNode = null;
-                _activeTreeManager = null;
-                FileSystemNode.ActiveManager = null;
+                SelectedModule = defaultModule;
             }
         }
         else
@@ -589,37 +584,44 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            // Защищаем триггер от Race Condition при быстрой смене проектов в ListBox
             var activeProject = SelectedProject ?? Projects.FirstOrDefault(p => p != null && p.Modules.Contains(value!));
 
             if (value != null && activeProject != null)
             {
-                // 1. Обновляем текстовые поля модуля
                 ModuleNameInput = value.ModuleName;
                 ContextFileName = value.ContextFileName;
                 ModuleRules = value.ModuleRules;
 
-                bool isTextProject = activeProject.Type == ProjectType.GoogleDoc || activeProject.Type == ProjectType.WordDoc;
-
-                // 2. ЕДИНСТВЕННЫЙ ИСТОЧНИК ИСТИНЫ: Строим дерево строго в один поток
-                if (isTextProject)
+                // ЕДИНСТВЕННЫЙ ИСТОЧНИК ИСТИНЫ ДЛЯ ЖИВЫХ МОДУЛЕЙ
+                if (activeProject.Type == ProjectType.GoogleDoc)
                 {
-                    // Литературный конвейер (GoogleDoc)
                     var bookManager = new BookTreeManager(activeProject, value);
-                    FileSystemNode.ActiveManager = null; // Для книг Roslyn-мост не нужен
+                    FileSystemNode.ActiveManager = null;
                     RootNode = bookManager.RootNode;
-                    _activeTreeManager = bookManager; // Фиксируем интерфейсный контракт
+                    _activeTreeManager = bookManager;
+                }
+                else if (activeProject.Type == ProjectType.WordDoc)
+                {
+                    var wordManager = new WordTreeManager(activeProject, value);
+                    FileSystemNode.ActiveManager = null;
+                    RootNode = wordManager.RootNode;
+                    _activeTreeManager = wordManager;
                 }
                 else
                 {
-                    // Технический конвейер (Код C# / SQL)
                     var codeManager = new ProjectTreeManager(activeProject, value);
-                    FileSystemNode.ActiveManager = codeManager; // Взводим Roslyn-мост ленивой загрузки
+                    FileSystemNode.ActiveManager = codeManager;
                     RootNode = codeManager.RootNode;
-                    _activeTreeManager = codeManager; // Фиксируем интерфейсный контракт
+                    _activeTreeManager = codeManager;
                 }
             }
-            else if (value == null)
+            else if (value == null && activeProject != null)
+            {
+                // ИСПРАВЛЕНО: Если модуль сброшен, но проект выбран, мы НЕ зануляем дерево,
+                // а вызываем фолбэк-метод сборки пустого каркаса
+                BuildTreeForNoModule(activeProject);
+            }
+            else
             {
                 ModuleNameInput = string.Empty;
                 ContextFileName = string.Empty;
@@ -629,7 +631,6 @@ public partial class MainViewModel : ObservableObject
                 FileSystemNode.ActiveManager = null;
             }
 
-            // Уведомляем интерфейс и запускаем фоновый подсчет токенов
             OnPropertyChanged(nameof(RootNode));
             _ = RecalculateContextSizeAsync();
         }
@@ -639,7 +640,41 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Вспомогательный метод сборки пустого дерева без выбранных галочек, 
+    /// если у проекта ещё нет ни одного модуля.
+    /// </summary>
+    private void BuildTreeForNoModule(ProjectConfig project)
+    {
+        ModuleNameInput = string.Empty;
+        ContextFileName = string.Empty;
+        ModuleRules = string.Empty;
 
+        // Создаем временный пустой модуль-пустышку, чтобы менеджеры не падали по NullReference
+        var emptyDummyModule = new ContextModule();
+
+        if (project.Type == ProjectType.GoogleDoc)
+        {
+            var bookManager = new BookTreeManager(project, emptyDummyModule);
+            FileSystemNode.ActiveManager = null;
+            RootNode = bookManager.RootNode;
+            _activeTreeManager = bookManager;
+        }
+        else if (project.Type == ProjectType.WordDoc)
+        {
+            var wordManager = new WordTreeManager(project, emptyDummyModule);
+            FileSystemNode.ActiveManager = null;
+            RootNode = wordManager.RootNode;
+            _activeTreeManager = wordManager;
+        }
+        else
+        {
+            var codeManager = new ProjectTreeManager(project, emptyDummyModule);
+            FileSystemNode.ActiveManager = codeManager;
+            RootNode = codeManager.RootNode;
+            _activeTreeManager = codeManager;
+        }
+    }
 
 
     [RelayCommand]
@@ -1429,7 +1464,10 @@ public partial class MainViewModel : ObservableObject
     {
         if (SelectedModule == null || RootNode == null) return;
 
-        // Считываем все галочки с экрана прямо в модель модуля перед сборкой
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: УНИВЕРСАЛЬНАЯ ВАЛИДАЦИЯ ВЫБОРА ДЛЯ КОДА И ПРОЗЫ       -->
+        // ================================================================= -->
+        // 1. Считываем все галочки с экрана прямо в модель модуля перед сборкой
         SyncTreeWithModule();
         string extension = IsPdfFormat ? ".pdf" : ".txt";
         string safeFileName = GetSafeFileName(ModuleNameInput) + extension;
@@ -1440,21 +1478,54 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        var checkedFiles = new List<FileSystemNode>();
-        ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles);
+        // Проверяем тип текущего проекта
+        bool isLiterary = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
+        bool hasSelection = false;
 
-        if (checkedFiles.Count == 0)
+        if (isLiterary)
         {
-            System.Windows.MessageBox.Show("Не выбрано ни одного фрагмента структуры для нарезки контекста.", "Внимание", MessageBoxButton.OK, MessageBoxImage.Warning);
+            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Для книг и Word проверяем наличие точечных глав в конфиге модуля!
+            hasSelection = SelectedModule?.CheckedEntries != null && SelectedModule.CheckedEntries.Count > 0;
+        }
+        else
+        {
+            // Для технического кода C#/SQL оставляем классический сбор плоских файлов с диска
+            var checkedFiles = new List<FileSystemNode>();
+            ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles);
+            hasSelection = checkedFiles.Count > 0;
+        }
+
+        // Если в зависимости от типа проекта ничего не найдено — выводим локализованное окно
+        if (!hasSelection)
+        {
+            string noSelectionMsg = Application.Current.Resources["Str_Err_Update_ReadDir"] as string
+                ?? "Не выбрано ни одного фрагмента структуры для нарезки контекста.";
+            string warnTitle = Application.Current.Resources["Str_Title_Warning"] as string ?? "Внимание";
+
+            System.Windows.MessageBox.Show(noSelectionMsg, warnTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        // Взводим флаги оверлея
+        // Вычисляем массив checkedFiles для передачи в прогресс-бар (только для кода, для книг создаем пустышку)
+        var checkedFilesForProgress = new List<FileSystemNode>();
+        if (!isLiterary) ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFilesForProgress);
+        else checkedFilesForProgress.Add(RootNode ?? new FileSystemNode());
+
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ЛОКАЛИЗАЦИЯ ШАБЛОНА ПОДГОТОВКИ ПРОГРЕСС-БАРА          -->
+        // ================================================================= -->
+        // Взводим флаги оверлея прогресс-бара
         IsProcessing = true;
         ProgressValue = 0;
-        ProgressMax = checkedFiles.Count;
-        ProgressText = $"Подготовка к обработке {checkedFiles.Count} элементов...";
+        ProgressMax = checkedFilesForProgress.Count;
+
+        // ИСПРАВЛЕНО: Вытаскиваем мультиязычный шаблон строки и безопасно форматируем его живой цифрой!
+        string preparingTemplate = Application.Current.Resources["Str_Update_PreparingElements"] as string
+                                   ?? "Подготовка к обработке {0} элементов...";
+
+        ProgressText = string.Format(preparingTemplate, checkedFilesForProgress.Count);
         CurrentFileText = "";
+
         _cts = new CancellationTokenSource();
 
         var progressHandler = new Progress<ProgressReport>(report =>
@@ -1475,37 +1546,54 @@ public partial class MainViewModel : ObservableObject
                 // ================================================================= -->
                 // Вызываем расширенную версию метода, соблюдая строгую последовательность параметров из ContextBuilderService
                 await ContextBuilderService.GeneratePdfContextFileAsync(
-                    OutputPath,                         // 1. Папка вывода
-                    safeFileName,                       // 2. Имя файла
-                    PromptRules,                        // 3. Общие правила проекта
-                    ModuleRules,                        // 4. Локальные правила модуля
-                    IncludeDirectoryStructure,          // 5. Флаг структуры оглавления
-                    IncludeImages,                      // 6. Флаг включения картинок с главной панели
-                    RootNode,                           // 7. Корневой узел дерева UI
-                    SelectedModule.CheckedEntries,      // 8. ИСПРАВЛЕНО CS0103: Твое родное свойство чекнутых синтаксических узлов!
-                    progressHandler,                    // 9. ИСПРАВЛЕНО CS0103: Твоя родная локальная переменная прогресс-бара!
-                    SelectedProject?.Type ?? ProjectType.Folder, // 10. Тип проекта (Книга/Код)
-                    _cts.Token);                        // 11. Токен отмены операции
+                    OutputPath,
+                    safeFileName,
+                    PromptRules,
+                    ModuleRules,
+                    IncludeDirectoryStructure,
+                    IncludeImages,
+                    RootNode ?? new FileSystemNode(), // <--- ЗАЩИТА ТУТ
+                    SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(), // <--- И ТУТ
+                    progressHandler,
+                    SelectedProject?.Type ?? ProjectType.Folder,
+                    _cts.Token);                     // 11. Токен отмены операции
 
 
             }
+            // ================================================================= -->
+            // ИСПРАВЛЕНО: УДАЛЕНИЕ ДУБЛИРОВАНИЯ СТАРТА PROCESS И ЛОКАЛИЗАЦИЯ CATCH -->
+            // ================================================================= -->
             else
             {
-                await ContextBuilderService.GenerateContextFileAsync(OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, RootNode, SelectedModule.CheckedEntries, progressHandler, _cts.Token);
-            }
-
-            if (File.Exists(fullPath))
-            {
-                System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
+                // Сервис GenerateContextFileAsync сам создаст файл, запишет StringBuilder и откроет Проводник ОДИН раз!
+                await ContextBuilderService.GenerateContextFileAsync(
+                    OutputPath,
+                    safeFileName,
+                    PromptRules,
+                    ModuleRules,
+                    IncludeDirectoryStructure,
+                    RootNode ?? new FileSystemNode(),
+                    SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
+                    progressHandler,
+                    SelectedProject?.Type ?? ProjectType.Folder,
+                    _cts.Token);
             }
         }
         catch (OperationCanceledException)
         {
-            System.Windows.MessageBox.Show("Операция сборки контекста была отменена пользователем.", "Отмена", MessageBoxButton.OK, MessageBoxImage.Information);
+            string cancelMsg = Application.Current.Resources["Str_Msg_OperationCanceled"] as string
+                               ?? "Операция сборки контекста была отменена пользователем.";
+            string warnTitle = Application.Current.Resources["Str_Title_Warning"] as string ?? "Внимание";
+
+            System.Windows.MessageBox.Show(cancelMsg, warnTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show($"Ошибка сборки файла: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+            string errTemplate = Application.Current.Resources["Str_Msg_BuildError"] as string
+                                 ?? "Ошибка сборки файла: {0}";
+            string errTitle = Application.Current.Resources["Str_Title_Error"] as string ?? "Ошибка";
+
+            System.Windows.MessageBox.Show(string.Format(errTemplate, ex.Message), errTitle, MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -1719,18 +1807,29 @@ public partial class MainViewModel : ObservableObject
             selectedType = ProjectType.Folder;
         }
 
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ПОЛНАЯ ЛОКАЛИЗАЦИЯ ПРОВЕРКИ ДОСТУПНОСТИ ИСТОЧНИКОВ     -->
+        // ================================================================= -->
         // 5. Проверка доступности источников перед фиксацией
+        string pathErrorTitle = Application.Current.Resources["Str_Err_ValidationTitle"] as string
+                                ?? "Ошибка пути";
+
         if (selectedType == ProjectType.Folder && !Directory.Exists(rootPath))
         {
-            MessageBox.Show("Указанная локальная папка источника данных не существует!", "Ошибка пути", MessageBoxButton.OK, MessageBoxImage.Error);
+            string folderErr = Application.Current.Resources["Str_Err_FolderNotExists"] as string
+                               ?? "Указанная локальная папка источника данных не существует!";
+            MessageBox.Show(folderErr, pathErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
         if (selectedType == ProjectType.WordDoc && !File.Exists(rootPath))
         {
-            MessageBox.Show("Указанный файл MS Word не найден на диске!", "Ошибка пути", MessageBoxButton.OK, MessageBoxImage.Error);
+            string wordErr = Application.Current.Resources["Str_Err_WordNotExists"] as string
+                             ?? "Указанный файл MS Word не найден на диске!";
+            MessageBox.Show(wordErr, pathErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
+
 
         if (selectedType == ProjectType.GoogleDoc)
         {
@@ -1782,19 +1881,42 @@ public partial class MainViewModel : ObservableObject
         targetProject.Type = selectedType;
         IsProjectOverlayVisible = false;
         SelectedProject = targetProject;
+        // ================================================================= -->
+        // ИСПРАВЛЕНО: ИНИЦИАЛИЗАЦИЯ СТРУКТУРЫ ДЛЯ ВСЕХ ТИПОВ ПРОЕКТОВ ИЗ ОКНА СЕЙВА -->
+        // ================================================================= -->
         targetProject.IncludeImages = EditProjectIncludeImagesInput;
         IncludeImages = EditProjectIncludeImagesInput;
 
-        // ИСПРАВЛЕНО CS0103: Инициализируем структуру через ProjectTreeManager
+        // ИСПРАВЛЕНО: Инициализируем структуру через правильный менеджер в зависимости от типа
         var currentModule = targetProject.Modules.FirstOrDefault();
         if (currentModule != null)
         {
-            var manager = new ProjectTreeManager(targetProject, currentModule);
-            FileSystemNode.ActiveManager = manager;
-            RootNode = manager.RootNode;
+            if (targetProject.Type == ProjectType.GoogleDoc)
+            {
+                var bookManager = new BookTreeManager(targetProject, currentModule);
+                FileSystemNode.ActiveManager = null;
+                RootNode = bookManager.RootNode;
+                _activeTreeManager = bookManager;
+            }
+            // ДОБАВЛЕНО: Безопасный упреждающий запуск WordTreeManager при сохранении карточки настроек
+            else if (targetProject.Type == ProjectType.WordDoc)
+            {
+                var wordManager = new WordTreeManager(targetProject, currentModule);
+                FileSystemNode.ActiveManager = null;
+                RootNode = wordManager.RootNode;
+                _activeTreeManager = wordManager;
+            }
+            else
+            {
+                var codeManager = new ProjectTreeManager(targetProject, currentModule);
+                FileSystemNode.ActiveManager = codeManager;
+                RootNode = codeManager.RootNode;
+                _activeTreeManager = codeManager;
+            }
         }
 
         SilentSave();
+
 
     }
     // Изолированное буферное поле для безопасного ввода ключа в интерфейсе оверлея
