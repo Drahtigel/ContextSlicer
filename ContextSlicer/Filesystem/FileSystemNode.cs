@@ -12,7 +12,6 @@ public class FileSystemNode : INotifyPropertyChanged
     private bool? _isChecked = false;
     private bool _isExpanded = false;
 
-    // Статичное свойство-ссылка на активный менеджер дерева
     public static ProjectTreeManager? ActiveManager { get; set; }
 
     public string Name { get; set; } = string.Empty;
@@ -23,7 +22,6 @@ public class FileSystemNode : INotifyPropertyChanged
     public FileSystemNode? Parent { get; set; }
     public ObservableCollection<FileSystemNode> Children { get; set; } = new();
 
-    // === СВОЙСТВА ДЛЯ СИНТАКСИЧЕСКОГО ДЕРЕВА ===
     public bool IsSyntaxNode { get; set; } = false;
     public EntryType SyntaxType { get; set; }
     public string SyntaxSpanInfo { get; set; } = string.Empty;
@@ -39,7 +37,6 @@ public class FileSystemNode : INotifyPropertyChanged
                 _isExpanded = value;
                 OnPropertyChanged(nameof(IsExpanded));
 
-                // ЛЕГЕНДАРНАЯ ЛЕНИВАЯ ЛОГИКА: Догрузка живого Roslyn при разворачивании стрелочки
                 if (_isExpanded && IsFile && !IsSyntaxNode && Children.Any(c => c.Name == "LoadingStub..."))
                 {
                     System.Windows.Application.Current.Dispatcher.BeginInvoke(new Func<Task>(async () =>
@@ -58,8 +55,11 @@ public class FileSystemNode : INotifyPropertyChanged
         }
     }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: КРИСТАЛЬНО ЧИСТЫЕ ПАССИВНЫЕ СВОЙСТВА НОДЫ ДЛЯ WPF     -->
+    // ================================================================= -->
     /// <summary>
-    /// Сырой флаг состояния из JSON конфигурации. Задается один раз при старте.
+    /// Физический флаг отметки элемента структуры.
     /// </summary>
     public bool? IsChecked
     {
@@ -70,134 +70,95 @@ public class FileSystemNode : INotifyPropertyChanged
             {
                 _isChecked = value;
                 OnPropertyChanged(nameof(IsChecked));
-
-                // При ручном клике на UI — мгновенно инвалидируем ComputedState вверх по цепочке
-                NotifyComputedStateChanged();
+                OnPropertyChanged(nameof(ComputedState));
             }
         }
     }
 
     /// <summary>
-    /// ИСТОЧНИК ИСТИНЫ ДЛЯ WPF (ТВОЙ АЛГОРИТМ): Органическая, рекурсивная Tri-State логика внутри самой модели!
+    /// Прямой мост к свойству IsChecked. Полностью исключает внутренние 
+    /// Roslyn-блокировки и циклическое затирание данных при ленивой загрузке.
     /// </summary>
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ГВАРДЕЙСКИЙ БАРЬЕР ДЛЯ СВЕРНУТЫХ ФАЙЛОВ С СИНТАКСИСОМ  -->
-    // ================================================================= -->
     public bool? ComputedState
     {
-        get
-        {
-            // 1. Если это конечная ветвь-лист синтаксиса, у которой физически нет детей
-            if (Children.Count == 0)
-            {
-                return _isChecked;
-            }
-
-            // 2. ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Если это ФАЙЛ КОДА, и внутри него 
-            // одновременно присутствуют и заглушка загрузки, и точечные функции —
-            // это 100% маркер того, что файл выбран ЧАСТИЧНО! Он обязан вернуть null (квадратик),
-            // полностью блокируя ложный возврат True из поломанных JSON конфигураций!
-            bool hasLoadingStub = false;
-            bool hasRealSyntaxChildren = false;
-
-            for (int i = 0; i < Children.Count; i++)
-            {
-                if (Children[i].Name == "LoadingStub...") hasLoadingStub = true;
-                else if (Children[i].IsSyntaxNode) hasRealSyntaxChildren = true;
-            }
-
-            if (IsFile && !IsSyntaxNode && hasRealSyntaxChildren)
-            {
-                return null; // Жёстко запечатываем файл в состоянии закрашенного квадратика!
-            }
-
-            // 3. Фолбэк для чистых нераскрытых файлов (где лежит только заглушка)
-            if (hasLoadingStub && Children.Count == 1)
-            {
-                return _isChecked;
-            }
-
-            // 4. Для папок диска — если папка выбрана целиком в CheckedFiles, возвращаем true
-            if (!IsFile && !IsSyntaxNode && _isChecked == true)
-            {
-                return true;
-            }
-
-            // 5. Переходим к рекурсивному опросу живых детей для раскрытых веток
-            bool hasChecked = false;
-            bool hasUnchecked = false;
-            bool hasIndeterminate = false;
-
-            for (int i = 0; i < Children.Count; i++)
-            {
-                var child = Children[i];
-                if (child.Name == "LoadingStub...") continue;
-
-                var childState = child.ComputedState;
-                if (childState == true) hasChecked = true;
-                else if (childState == false) hasUnchecked = true;
-                else hasIndeterminate = true;
-            }
-
-            if (hasIndeterminate || (hasChecked && hasUnchecked))
-            {
-                return null;
-            }
-            if (hasChecked && !hasUnchecked)
-            {
-                return true;
-            }
-            return false;
-        }
+        get => _isChecked;
         set
         {
-            SetChecked(value, updateChildren: true, updateParent: true);
+            if (_isChecked != value)
+            {
+                _isChecked = value;
+                OnPropertyChanged(nameof(IsChecked));
+                OnPropertyChanged(nameof(ComputedState));
+
+                // Пробрасываем сигнал клика в центральный Медиатор
+                if (ActiveManager != null)
+                {
+                    if (Children != null && Children.Count > 0)
+                    {
+                        ActiveManager.RecalculateChildrenCascade(this, value ?? false);
+                    }
+                    if (Parent != null)
+                    {
+                        ActiveManager.RecalculateParentsBalance(this.Parent);
+                    }
+                }
+            }
         }
     }
 
 
-    /// <summary>
-    /// Прокидывает команду обновления интерфейса вверх к родителям при кликах
-    /// </summary>
     public void NotifyComputedStateChanged()
     {
+        // Выбрасываем стандартные асинхронные уведомления для биндера WPF
         OnPropertyChanged(nameof(ComputedState));
+        OnPropertyChanged(nameof(IsChecked));
         Parent?.NotifyComputedStateChanged();
     }
 
+    /// <summary>
+    /// Бронебойный сквозной транслятор. Прошивает всю вертикаль дерева строго сверху вниз.
+    /// </summary>
     public void SetChecked(bool? value, bool updateChildren, bool updateParent)
     {
-        if (_isChecked == value) return;
+        // Только конечный лист-глава имеет право физически сохранить флаг
+        if (Children == null || Children.Count == 0 || (Children.Count == 1 && Children[0].Name == "LoadingStub..."))
+        {
+            _isChecked = value;
+        }
+        else
+        {
+            _isChecked = null; // Папки никогда не удерживают личный статус в обход детей!
+        }
 
-        _isChecked = value;
         OnPropertyChanged(nameof(IsChecked));
         OnPropertyChanged(nameof(ComputedState));
 
-        // Каскад сверху вниз при ручной отметке
+        // Бескомпромиссный спуск жесткого статуса (true/false) до самых глубоких листьев-глав
         if (updateChildren && Children != null && Children.Count > 0)
         {
-            bool hasLoadingStub = Children.Any(c => c.Name == "LoadingStub...");
-            if (!hasLoadingStub)
+            for (int i = 0; i < Children.Count; i++)
             {
-                foreach (var child in Children)
+                var child = Children[i];
+                if (child != null && child.Name != "LoadingStub...")
                 {
-                    child?.SetChecked(value, updateChildren: true, updateParent: false);
+                    child.SetChecked(value, updateChildren: true, updateParent: false);
                 }
             }
         }
 
+        // Пересчет баланса по цепочке вверх к корню репозитория
         if (updateParent)
         {
             Parent?.NotifyComputedStateChanged();
         }
     }
 
+
     public string TypeLocalKey
     {
         get
         {
             if (!IsSyntaxNode) return string.Empty;
-
             if (SyntaxType == EntryType.Tab) return "Str_Type_Tab";
             if (SyntaxType == EntryType.Heading) return "Str_Type_Heading";
 
@@ -208,7 +169,6 @@ public class FileSystemNode : INotifyPropertyChanged
                 if (Name.Contains("[ПРЕДСТАВЛЕНИЕ]") || Name.Contains("[VIEW]")) return "Str_Type_SqlView";
                 return "Str_Type_SqlTable";
             }
-
             return $"Str_Type_{SyntaxType}";
         }
     }
@@ -218,7 +178,6 @@ public class FileSystemNode : INotifyPropertyChanged
         get
         {
             if (!IsSyntaxNode) return string.Empty;
-
             if (SyntaxType == EntryType.Heading || SyntaxType == EntryType.Tab) return string.Empty;
 
             string shortTag = SyntaxType switch
@@ -233,7 +192,6 @@ public class FileSystemNode : INotifyPropertyChanged
                 EntryType.Section => "SECT",
                 _ => SyntaxType.ToString().ToUpper()
             };
-
             return $"[{shortTag}]";
         }
     }
@@ -242,4 +200,3 @@ public class FileSystemNode : INotifyPropertyChanged
     protected void OnPropertyChanged([CallerMemberName] string? name = null)
         => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
-

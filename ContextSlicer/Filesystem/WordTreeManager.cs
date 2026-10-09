@@ -10,20 +10,13 @@ namespace ContextSlicer.Filesystem;
 /// <summary>
 /// Автономный контроллер структуры локальных документов MS Word (.docx).
 /// </summary>
-public class WordTreeManager : IProjectTreeManager
+public class WordTreeManager : BaseTreeManager
 {
-    private readonly ProjectConfig _project;
-    private readonly ContextModule _module;
     private readonly string _docFilePath;
 
-    public FileSystemNode RootNode { get; private set; } = null!;
-
-    public WordTreeManager(ProjectConfig project, ContextModule module)
+    public WordTreeManager(ProjectConfig project, ContextModule module) : base(project, module)
     {
-        _project = project ?? throw new ArgumentNullException(nameof(project));
-        _module = module ?? throw new ArgumentNullException(nameof(module));
-        _docFilePath = project.RootPath; // Для Word в RootPath хранится физический путь к файлу .docx
-
+        _docFilePath = project.RootPath;
         InitializeWordTree();
     }
 
@@ -31,7 +24,7 @@ public class WordTreeManager : IProjectTreeManager
     {
         var localRoot = new FileSystemNode
         {
-            Name = _project.ProjectName,
+            Name = Project.ProjectName,
             FullPath = _docFilePath,
             RelativePath = string.Empty,
             IsFile = false,
@@ -45,7 +38,6 @@ public class WordTreeManager : IProjectTreeManager
                 var parser = SyntaxParserFactory.GetParser(".docx");
                 if (parser != null)
                 {
-                    // Безопасно вычитываем структуру заголовков docx в фоновом потоке пула
                     var allEntries = Task.Run(async () =>
                         await parser.ParseFileAsync(_docFilePath, Path.GetFileName(_docFilePath)).ConfigureAwait(false)
                     ).GetAwaiter().GetResult();
@@ -67,55 +59,27 @@ public class WordTreeManager : IProjectTreeManager
             }
         }
 
-        var uniqueMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
-        BuildNodesMap(localRoot, uniqueMap);
-
-        var savedEntriesSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (_module.CheckedEntries != null)
-        {
-            foreach (var e in _module.CheckedEntries)
-            {
-                if (e != null && !string.IsNullOrEmpty(e.EntryPath)) savedEntriesSet.Add(e.EntryPath);
-            }
-        }
-
-        foreach (var nodePair in uniqueMap)
-        {
-            var node = nodePair.Value;
-            if (node == null || !node.IsSyntaxNode) continue;
-
-            // ИСПРАВЛЕНО: Безопасный подсчет листьев структуры
-            bool isLeafNode = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
-
-            if (isLeafNode)
-            {
-                bool isSaved = savedEntriesSet.Contains(node.EntryPath);
-                node.SetChecked(isSaved ? true : false, updateChildren: false, updateParent: false);
-            }
-            // ИСПРАВЛЕНО: Ветка else { node.SetChecked(null); } ПОЛНОСТЬЮ УДАЛЕНА!
-            // Родителю больше не навязывается сырой null извне. Его ComputedState 
-            // автоматически и чисто посчитается силами WPF-привязки, не плодя дедлоков!
-        }
-
-        // Одиночный, безопасный финишный сигнал для перерисовки дерева на экране
-        localRoot.NotifyComputedStateChanged();
+        // Вызываем монолитный метод восстановления Tri-State состояний из базового класса!
+        RestoreCheckedStatesFromConfig(localRoot);
         RootNode = localRoot;
     }
     // ================================================================= -->
-    // ИСПРАВЛЕНО: СТРОГАЯ СТРУКТУРНАЯ ФИЛЬТРАЦИЯ И СБОРКА ИЕРАРХИИ WORD -->
+    // ИСПРАВЛЕНО CS8604: ФИКСАЦИЯ КЛЮЧА ЧЕРЕЗ СТРОГУЮ ЛОКАЛЬНУЮ ПЕРЕМЕННУЮ -->
     // ================================================================= -->
     private void InjectWordNodeSecure(FileSystemNode localRoot, SyntaxEntry entry, Dictionary<string, FileSystemNode> buildingMap)
     {
         if (entry == null || string.IsNullOrEmpty(entry.EntryPath)) return;
 
-        // Жесткая защита от дублирования узлов в карте сборки
-        if (buildingMap.ContainsKey(entry.EntryPath)) return;
+        // ИСПРАВЛЕНО: Кэшируем путь в локальную non-nullable переменную.
+        // Это раз и навсегда отрежет варнинг CS8604 на строке 118!
+        string entryPathKey = entry.EntryPath;
 
-        // ТВОЙ АЛГОРИТМ: В дерево TreeView должны идти ТОЛЬКО структурные заголовки (Heading)!
-        // Обычные текстовые абзацы и скрытые маркеры не должны засорять UI и ломать компоновку WPF!
+        if (buildingMap.ContainsKey(entryPathKey)) return;
+
+        // В дерево идут только заголовки и вкладки структуры, исключая кашу из плоского текста!
         if (entry.Type != EntryType.Heading && entry.Type != EntryType.Tab) return;
 
-        uint rawHash = unchecked((uint)entry.EntryPath.GetHashCode());
+        uint rawHash = unchecked((uint)entryPathKey.GetHashCode());
         string elementId = "h_" + rawHash.ToString("x8");
 
         var newNode = new FileSystemNode
@@ -127,7 +91,7 @@ public class WordTreeManager : IProjectTreeManager
             IsSyntaxNode = true,
             SyntaxType = entry.Type,
             SyntaxSpanInfo = entry.SpanInfo ?? string.Empty,
-            EntryPath = entry.EntryPath,
+            EntryPath = entryPathKey,
             IsExpanded = true,
             Parent = null
         };
@@ -135,14 +99,13 @@ public class WordTreeManager : IProjectTreeManager
         newNode.SetChecked(null, updateChildren: false, updateParent: false);
 
         string parentEntryPath = string.Empty;
-        int lastSep = entry.EntryPath.LastIndexOf('/');
+        int lastSep = entryPathKey.LastIndexOf('/');
 
         if (lastSep > 0)
         {
-            parentEntryPath = entry.EntryPath.Substring(0, lastSep).Trim();
+            parentEntryPath = entryPathKey.Substring(0, lastSep).Trim();
         }
 
-        // Выполняем точечный поиск родительского заголовка в карте сборки текущего шага
         if (!string.IsNullOrEmpty(parentEntryPath) && buildingMap.TryGetValue(parentEntryPath, out var parentNode))
         {
             newNode.Parent = parentNode;
@@ -150,35 +113,18 @@ public class WordTreeManager : IProjectTreeManager
         }
         else
         {
-            // Если это корневой заголовок (например, "Глава 1.") — его родителем становится корень проекта
             newNode.Parent = localRoot;
             localRoot.Children.Add(newNode);
         }
 
-        // Фиксируем заголовок в карте, чтобы его вложенные подзаголовки могли его найти!
-        buildingMap[entry.EntryPath] = newNode;
-    }
-    private void BuildNodesMap(FileSystemNode node, Dictionary<string, FileSystemNode> map)
-    {
-        if (node == null) return;
-        if (!string.IsNullOrEmpty(node.EntryPath)) map[node.EntryPath] = node;
-        var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy) BuildNodesMap(child, map);
-    }
-
-    public List<string> GetCheckedFiles() => new();
-
-    public List<SyntaxEntry> GetSelectedEntries()
-    {
-        return _module.CheckedEntries != null
-            ? _module.CheckedEntries.Where(e => e != null).ToList()
-            : new List<SyntaxEntry>();
+        // ИСПРАВЛЕНО: Передаем локальную переменную entryPathKey вместо entry.EntryPath!
+        buildingMap[entryPathKey] = newNode;
     }
 
     // ================================================================= -->
     // ИСПРАВЛЕНО: АВТОНОМНЫЙ ПАССИВНЫЙ ПОДСЧЕТ СИМВОЛОВ И ТАБЛИЦ WORD   -->
     // ================================================================= -->
-    public async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
+    public override async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
     {
         var activeEntries = GetSelectedEntries();
         if (activeEntries.Count == 0 || string.IsNullOrEmpty(_docFilePath) || !File.Exists(_docFilePath))
@@ -197,17 +143,11 @@ public class WordTreeManager : IProjectTreeManager
 
                     long totalLength = 0;
                     var bodyElements = mainPart.Document.Body.ChildElements;
-
-                    // Сбор хэш-сета выбранных путей для O(1) поиска
                     var selectedPathsSet = new HashSet<string>(activeEntries.Select(e => e.EntryPath), StringComparer.OrdinalIgnoreCase);
 
-                    // Если флаг оглавления активен — добавляем вес разметки структуры каталогов
                     if (includeDirectoryStructure)
                     {
-                        foreach (string path in selectedPathsSet)
-                        {
-                            totalLength += path.Length + 5;
-                        }
+                        foreach (string path in selectedPathsSet) totalLength += path.Length + 5;
                     }
 
                     string currentChapterPath = string.Empty;
@@ -221,22 +161,16 @@ public class WordTreeManager : IProjectTreeManager
                         {
                             var textNodes = paragraph.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().ToList();
                             int elementLength = textNodes.Sum(t => (t.Text ?? string.Empty).Length);
-
                             string styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? string.Empty;
 
-                            // Если встретили заголовок — пересчитываем текущую координату пути
                             if (!string.IsNullOrEmpty(styleId) && styleId.StartsWith("Heading", StringComparison.OrdinalIgnoreCase)
                                 && int.TryParse(styleId.Substring(7), out int level))
                             {
                                 string headingText = string.Concat(textNodes.Select(t => t.Text ?? string.Empty)).Trim();
-
                                 if (!string.IsNullOrEmpty(headingText))
                                 {
                                     int targetParentLevel = level - 1;
-                                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel))
-                                    {
-                                        targetParentLevel--;
-                                    }
+                                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel)) targetParentLevel--;
 
                                     string parentPath = activePaths[targetParentLevel];
                                     currentChapterPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
@@ -247,7 +181,6 @@ public class WordTreeManager : IProjectTreeManager
                                 }
                             }
 
-                            // ТВОЙ АЛГОРИТМ: Если текущий абзац принадлежит выбранной главе — суммируем его вес!
                             if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
                             {
                                 totalLength += elementLength;
@@ -255,18 +188,13 @@ public class WordTreeManager : IProjectTreeManager
                         }
                         else if (element is DocumentFormat.OpenXml.Wordprocessing.Table table)
                         {
-                            // Если сложная таблица находится внутри выбранной главы — вычитываем её текст
                             if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
                             {
-                                int tableLength = table.Descendants<DocumentFormat.OpenXml.Wordprocessing.TableCell>()
-                                    .Sum(cell => cell.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>()
-                                    .Sum(t => (t.Text ?? string.Empty).Length));
-
-                                totalLength += tableLength;
+                                totalLength += table.Descendants<DocumentFormat.OpenXml.Wordprocessing.TableCell>()
+                                    .Sum(c => c.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().Sum(t => (t.Text ?? string.Empty).Length));
                             }
                         }
                     }
-
                     return totalLength;
                 }
             }
@@ -277,5 +205,4 @@ public class WordTreeManager : IProjectTreeManager
             }
         }, token);
     }
-
-}
+} // Финальное закрытие класса!

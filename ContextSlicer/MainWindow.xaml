@@ -560,7 +560,9 @@
                     <TreeView.Resources>
                         <HierarchicalDataTemplate DataType="{x:Type local:FileSystemNode}" ItemsSource="{Binding Children}">
                             <StackPanel Orientation="Horizontal" Margin="2">
-                                <CheckBox IsChecked="{Binding ComputedState}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <CheckBox IsChecked="{Binding ComputedState, Mode=OneWay}" 
+          Click="CheckBox_Node_Click"
+          VerticalAlignment="Center" Margin="0,0,6,0"/>
 
                                 <!-- Префикс синтаксиса (NS, CLS, FUNC, PROP): Текст берется из свойства TypePrefixText -->
                                 <!-- Цвет жестко привязан к DynamicResource AccentBrush для идеального контраста в любой теме -->

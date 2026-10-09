@@ -1,10 +1,8 @@
-﻿// ================================================================= -->
-// ЧАСТЬ 1: СКАНИРОВАНИЕ ДИСКА И НАКАТ МАССИВА CHECKEDFILES          -->
-// ================================================================= -->
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ContextSlicer.Filesystem;
@@ -12,21 +10,21 @@ namespace ContextSlicer.Filesystem;
 /// <summary>
 /// Автономная точка правды для технических проектов. Управляет структурой файлов диска и синтаксисом Roslyn.
 /// </summary>
-public class ProjectTreeManager:IProjectTreeManager
+public class ProjectTreeManager : BaseTreeManager
 {
-    private readonly ProjectConfig _project;
-    private readonly ContextModule _module;
     private readonly string _rootPath;
 
-    public FileSystemNode RootNode { get; private set; } = null!;
-
-    public ProjectTreeManager(ProjectConfig project, ContextModule module)
+    public ProjectTreeManager(ProjectConfig project, ContextModule module) : base(project, module)
     {
-        _project = project ?? throw new ArgumentNullException(nameof(project));
-        _module = module ?? throw new ArgumentNullException(nameof(module));
         _rootPath = project.RootPath;
-
         InitializeCodeTree();
+    }
+
+    public override List<string> GetCheckedFiles()
+    {
+        return Module.CheckedFiles != null
+            ? Module.CheckedFiles.Where(f => !string.IsNullOrEmpty(f)).ToList()
+            : new List<string>();
     }
 
     /// <summary>
@@ -40,16 +38,16 @@ public class ProjectTreeManager:IProjectTreeManager
         var localRoot = BuildBaseDiskTree(_rootPath, string.Empty);
         if (localRoot == null) return;
 
-        localRoot.Name = _project.ProjectName;
+        localRoot.Name = Project.ProjectName;
 
         // Картируем все построенные дисковые узлы (файлы и папки) по их относительным путям для O(1) поиска
         var diskNodesMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
         BuildDiskNodesMapRecursive(localRoot, diskNodesMap);
 
         // ШАГ 2: НАКАТЫВАЕМ ФАЙЛЫ, ВЫБРАННЫЕ ЦЕЛИКОМ (CheckedFiles)
-        if (_module.CheckedFiles != null)
+        if (Module.CheckedFiles != null)
         {
-            foreach (var relPath in _module.CheckedFiles)
+            foreach (var relPath in Module.CheckedFiles)
             {
                 if (string.IsNullOrEmpty(relPath)) continue;
                 string normPath = relPath.Replace('/', '\\');
@@ -62,13 +60,9 @@ public class ProjectTreeManager:IProjectTreeManager
         }
 
         // ШАГ 3: НАКАТЫВАЕМ ТОЧЕЧНЫЕ СИНТАКСИЧЕСКИЕ ВЫБОРКИ (CheckedEntries)
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: УПРЕЖДАЮЩИЙ НАКАТ NULL-STATE ДЛЯ РОДИТЕЛЬСКИХ ПАПОК ДИСКА -->
-        // ================================================================= -->
-        // ШАГ 3: НАКАТЫВАЕМ ТОЧЕЧНЫЕ СИНТАКСИЧЕСКИЕ ВЫБОРКИ (CheckedEntries)
-        if (_module.CheckedEntries != null)
+        if (Module.CheckedEntries != null)
         {
-            var entriesByFile = _module.CheckedEntries
+            var entriesByFile = Module.CheckedEntries
                 .Where(e => e != null && !string.IsNullOrEmpty(e.FilePath))
                 .ToLookup(e => e.FilePath.Replace("/", "\\").Replace("\\\\", "\\"), StringComparer.OrdinalIgnoreCase);
 
@@ -78,16 +72,11 @@ public class ProjectTreeManager:IProjectTreeManager
 
                 if (diskNodesMap.TryGetValue(fileRelPath, out var fileNode))
                 {
-                    // 1. Ставим самому файлу статус тристейта (null), так как внутри него выбраны только методы
                     fileNode.SetChecked(null, updateChildren: false, updateParent: false);
 
-                    // 2. ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Поднимаемся по цепочке вверх от файла к корню
-                    // и принудительно выставляем абсолютно всем родительским папкам статус null!
-                    // Это заставит папки Filesystem и Google гореть закрашенными квадратиками прямо при старте!
                     var currentParent = fileNode.Parent;
                     while (currentParent != null)
                     {
-                        // Если папка не выбрана целиком (не true) — гарантированно переводим её в тристейт null
                         if (currentParent.IsChecked != true)
                         {
                             currentParent.SetChecked(null, updateChildren: false, updateParent: false);
@@ -95,13 +84,11 @@ public class ProjectTreeManager:IProjectTreeManager
                         currentParent = currentParent.Parent;
                     }
 
-                    // Намертво вычищаем техническую заглушку ленивой загрузки для предзаданных из JSON нод
                     for (int i = fileNode.Children.Count - 1; i >= 0; i--)
                     {
                         if (fileNode.Children[i].Name == "LoadingStub...") fileNode.Children.RemoveAt(i);
                     }
 
-                    // Накатываем структуру выбранных классов/методов из JSON внутрь файла
                     foreach (var entry in fileGroup)
                     {
                         if (entry == null) continue;
@@ -110,16 +97,13 @@ public class ProjectTreeManager:IProjectTreeManager
                 }
             }
         }
-        // ================================================================= -->
 
-        // ШАГ 4: Запускаем один сквозной Tri-State пересчет снизу вверх
-        localRoot.NotifyComputedStateChanged();
-
+        // ШАГ 4: Запускаем сквозной Tri-State пересчет базового класса
+        RestoreCheckedStatesFromConfig(localRoot);
         RootNode = localRoot;
     }
-
     /// <summary>
-    /// Сканирует диск и строит базовое плоское дерево репозитория со статусом False
+    /// Рекурсивно сканирует жесткий диск и строит базовый каркас папок и файлов
     /// </summary>
     private FileSystemNode? BuildBaseDiskTree(string currentPath, string relPath)
     {
@@ -178,9 +162,7 @@ public class ProjectTreeManager:IProjectTreeManager
 
         return node;
     }
-    // ================================================================= -->
-    // ЧАСТЬ 2: ИНЖЕКЦИЯ СИНТАКСИСА, ROSLYN-МЕРДЖЕР И TRI-STATE ПЕРЕСЧЕТ -->
-    // ================================================================= -->
+
     private void InjectSyntaxNodeFromConfig(FileSystemNode fileNode, SyntaxEntry entry)
     {
         var fileNodesMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
@@ -222,7 +204,7 @@ public class ProjectTreeManager:IProjectTreeManager
     }
 
     /// <summary>
-    /// Ленивая догрузка невыбранных методов Roslyn при клике на стрелочку файла исходного кода
+    /// Асинхронная динамическая догрузка Roslyn-методов при клике на стрелочку TreeView
     /// </summary>
     public async Task PopulateSyntaxNodesAsync(FileSystemNode fileNode)
     {
@@ -240,9 +222,9 @@ public class ProjectTreeManager:IProjectTreeManager
         BuildNodesMapRecursive(fileNode, existingNodesMap);
 
         var savedCombinedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (_module.CheckedEntries != null)
+        if (Module.CheckedEntries != null)
         {
-            foreach (var entry in _module.CheckedEntries)
+            foreach (var entry in Module.CheckedEntries)
             {
                 if (entry != null && !string.IsNullOrEmpty(entry.FilePath) && !string.IsNullOrEmpty(entry.EntryPath))
                 {
@@ -303,28 +285,19 @@ public class ProjectTreeManager:IProjectTreeManager
         fileNode.NotifyComputedStateChanged();
     }
 
-    
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: СТРОГАЯ ОДНОРОДНОСТЬ СЛЭШЕЙ В ДИСКОВОЙ КАРТЕ MAP       -->
-    // ================================================================= -->
     private void BuildDiskNodesMapRecursive(FileSystemNode node, Dictionary<string, FileSystemNode> map)
     {
         if (node == null || node.IsSyntaxNode) return;
 
         if (!string.IsNullOrEmpty(node.RelativePath))
         {
-            // ИСПРАВЛЕНО: Принудительно приводим дисковые относительные пути к единому стандарту
             string canonicalPath = node.RelativePath.Replace("/", "\\").Replace("\\\\", "\\");
             map[canonicalPath] = node;
         }
 
         var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy)
-        {
-            BuildDiskNodesMapRecursive(child, map);
-        }
+        foreach (var child in childrenCopy) BuildDiskNodesMapRecursive(child, map);
     }
-
 
     private void BuildNodesMapRecursive(FileSystemNode node, Dictionary<string, FileSystemNode> map)
     {
@@ -344,90 +317,13 @@ public class ProjectTreeManager:IProjectTreeManager
         return !string.IsNullOrEmpty(ext) && GlobalFilterService.Current.ExcludedExtensions.Any(e => ext.Equals(e, StringComparison.OrdinalIgnoreCase));
     }
 
-    // ================================================================= -->
-    // РЕАЛИЗАЦИЯ ИНТЕРФЕЙСА: СБОР ОТМЕЧЕННОГО КОДА ПО COMPUTEDSTATE     -->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ПОТОКОБЕЗОПАСНЫЙ СБОР КОДА НАПРЯМУЮ ИЗ КОНФИГУРАЦИИ  -->
-    // ================================================================= -->
-    public List<SyntaxEntry> GetSelectedEntries()
+    public override async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
     {
-        // Калькулятор токенов получит кристально чистый, независимый от UI потоков список
-        return _module.CheckedEntries != null
-            ? _module.CheckedEntries.Where(e => e != null).ToList()
-            : new List<SyntaxEntry>();
-    }
+        var savedFiles = GetCheckedFiles();
+        var savedEntries = GetSelectedEntries();
 
-    /// <summary>
-    /// Дополнительный потокобезопасный сборщик файлов, выбранных целиком
-    /// </summary>
-    public List<string> GetCheckedFiles()
-    {
-        return _module.CheckedFiles != null
-            ? _module.CheckedFiles.Where(f => !string.IsNullOrEmpty(f)).ToList()
-            : new List<string>();
-    }
+        if (savedFiles.Count == 0 && savedEntries.Count == 0) return 0;
 
-
-    private void CollectCodeEntriesRecursive(FileSystemNode node, List<SyntaxEntry> result)
-    {
-        if (node == null) return;
-
-        // СЦЕНАРИЙ А: Пользователь выбрал физический файл целиком
-        if (node.IsFile && !node.IsSyntaxNode && node.ComputedState == true)
-        {
-            result.Add(new SyntaxEntry
-            {
-                FilePath = node.RelativePath,
-                EntryPath = string.Empty, // Маркер полной сборки файла
-                DisplayName = node.Name,
-                Type = EntryType.Section // Фолбэк-тип для файла целиком
-            });
-            return;
-        }
-
-        // СЦЕНАРИЙ Б: Пользователь выбрал конкретную точечную функцию внутри файла
-        if (node.IsSyntaxNode && node.ComputedState == true)
-        {
-            bool isLeaf = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
-            if (isLeaf)
-            {
-                result.Add(new SyntaxEntry
-                {
-                    FilePath = node.RelativePath,
-                    EntryPath = node.EntryPath,
-                    DisplayName = node.Name,
-                    Type = node.SyntaxType,
-                    SpanInfo = node.SyntaxSpanInfo
-                });
-            }
-        }
-
-        var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy)
-        {
-            CollectCodeEntriesRecursive(child, result);
-        }
-    }
-    // ================================================================= -->
-    // РЕАЛИЗАЦИЯ ИНТЕРФЕЙСА: АВТОНОМНЫЙ ПОДСЧЕТ СИМВОЛОВ ИСХОДНОГО КОДА-->
-    // ================================================================= -->
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: СТЕРИЛЬНЫЙ ПАССИВНЫЙ ПОДСЧЕТ КОДА БЕЗ ТРИГГЕРОВ WPF   -->
-    // ================================================================= -->
-    public async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
-    {
-        // Берем списки выбранного контекста напрямую из стерильной конфигурации модуля,
-        // полностью исключая обращение к UI-коллекциям и вызов бесконечных рекурсий!
-        var savedFiles = _module.CheckedFiles != null ? _module.CheckedFiles.ToList() : new List<string>();
-        var savedEntries = _module.CheckedEntries != null ? _module.CheckedEntries.ToList() : new List<SyntaxEntry>();
-
-        if (savedFiles.Count == 0 && savedEntries.Count == 0)
-        {
-            return 0;
-        }
-
-        // Воссоздаем плоский список нод для оригинального сервиса верстки
         var checkedFilesList = new List<FileSystemNode>();
         foreach (var relPath in savedFiles)
         {
@@ -441,8 +337,6 @@ public class ProjectTreeManager:IProjectTreeManager
         }
 
         var emptyProgress = new Progress<ProgressReport>();
-
-        // Вызываем оригинальный сервис, передавая ему изолированные списки данных
         var sb = await ContextBuilderService.BuildTextContentAsync(
             string.Empty, string.Empty, includeDirectoryStructure,
             checkedFilesList, savedEntries,
@@ -451,16 +345,4 @@ public class ProjectTreeManager:IProjectTreeManager
 
         return sb?.Length ?? 0;
     }
-
-
-    private void CollectFilesInternal(FileSystemNode node, List<FileSystemNode> result)
-    {
-        if (node == null) return;
-        if (node.IsFile && !node.IsSyntaxNode && (node.ComputedState == true || node.ComputedState == null))
-        {
-            if (!result.Contains(node)) result.Add(node);
-        }
-        foreach (var child in node.Children) CollectFilesInternal(child, result);
-    }
-
 }

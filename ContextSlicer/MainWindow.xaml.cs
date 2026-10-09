@@ -106,6 +106,23 @@ public partial class MainWindow : Window
             vm.OnWindowClosing();
         }
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПЕРЕХВАТ КЛИКА ЧЕКБОКСА ИЗ ДЕРЕВА ДЛЯ ЗАПУСКА КАСКАДА  -->
+    // ================================================================= -->
+    private void CheckBox_Node_Click(object sender, RoutedEventArgs e)
+    {
+        // Извлекаем физический чекбокс, по которому кликнули
+        if (sender is System.Windows.Controls.CheckBox checkBox &&
+            checkBox.DataContext is ContextSlicer.Filesystem.FileSystemNode node)
+        {
+            // Достукиваемся до нашей активной MainViewModel
+            if (this.DataContext is MainViewModel vm)
+            {
+                // Передаем ноду и её новое визуальное состояние в наш Медиатор!
+                vm.HandleNodeCheckChanged(node, checkBox.IsChecked);
+            }
+        }
+    }
 
     private void TxtProjectName_LostFocus(object sender, RoutedEventArgs e)
     {

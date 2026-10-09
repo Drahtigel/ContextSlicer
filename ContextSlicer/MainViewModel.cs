@@ -98,23 +98,47 @@ public partial class MainViewModel : ObservableObject
 
     // Вспомогательный метод перезагрузки дерева файлов (оставляем старый)
     // Вспомогательный метод перезагрузки дерева файлов (ИСПРАВЛЕНО: Полный принудительный пересчет)
+    // ================================================================= -->
+    // ИСПРАВЛЕНО CS0117: ЧИСТЫЙ ПОЛИМОРФНЫЙ ПЕРЕЗАПУСК ДЕРЕВА БЕЗ КОСТЫЛЕЙ -->
+    // ================================================================= -->
     private void TriggerTreeRefresh()
     {
-        if (SelectedProject != null && !string.IsNullOrWhiteSpace(RootPath))
+        if (SelectedProject != null && SelectedModule != null)
         {
-            // Запускаем стандартный метод сборки дерева, который у вас вызывается при выборе папки.
-            // Передаем текущий корневой путь и список уже сохраненных чекнутых файлов модуля
-            var savedChecked = new List<string>();
-            if (SelectedModule?.CheckedFiles != null)
+            _isUpdatingFields = true;
+            try
             {
-                savedChecked = new List<string>(SelectedModule.CheckedFiles);
+                // Менеджеры сами подтянут обновленные фильтры и перестроят структуру из своих источников!
+                if (SelectedProject.Type == ProjectType.GoogleDoc)
+                {
+                    var bookManager = new BookTreeManager(SelectedProject, SelectedModule);
+                    FileSystemNode.ActiveManager = null;
+                    RootNode = bookManager.RootNode;
+                    _activeTreeManager = bookManager;
+                }
+                else if (SelectedProject.Type == ProjectType.WordDoc)
+                {
+                    var wordManager = new WordTreeManager(SelectedProject, SelectedModule);
+                    FileSystemNode.ActiveManager = null;
+                    RootNode = wordManager.RootNode;
+                    _activeTreeManager = wordManager;
+                }
+                else
+                {
+                    var codeManager = new ProjectTreeManager(SelectedProject, SelectedModule);
+                    FileSystemNode.ActiveManager = codeManager;
+                    RootNode = codeManager.RootNode;
+                    _activeTreeManager = codeManager;
+                }
+            }
+            finally
+            {
+                _isUpdatingFields = false;
             }
 
-            // Перестраиваем структуру дерева с учетом НОВЫХ глобальных фильтров
-            RootNode = ContextBuilderService.BuildTree(RootPath, savedChecked);
-
-            // Уведомляем интерфейс WPF, что дерево файлов полностью обновилось
+            // Одиночный, чистый синхронный сигнал для WPF-привязки TreeView
             OnPropertyChanged(nameof(RootNode));
+            _ = RecalculateContextSizeAsync();
         }
     }
 
@@ -712,16 +736,11 @@ public partial class MainViewModel : ObservableObject
         SilentSave();
     }
 
-
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: БЕЗОПАСНОЕ СОЗДАНИЕ МОДУЛЯ БЕЗ СБРОСА ВЫДЕЛЕНИЯ UI    -->
-    // ================================================================= -->
     [RelayCommand]
     private void CreateNewModule()
     {
         if (SelectedProject == null)
         {
-            // Вытаскиваем мультиязычные ресурсы из Strings.ru.xaml / Strings.en.xaml
             string selectProjMsg = System.Windows.Application.Current.Resources["Str_ProjNotSelected"] as string
                 ?? "Сначала выберите или создайте проект!";
             string warnTitle = System.Windows.Application.Current.Resources["Str_Title_Warning"] as string
@@ -738,7 +757,6 @@ public partial class MainViewModel : ObservableObject
         bool isDuplicate = SelectedProject.Modules.Any(m => m.ModuleName.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (isDuplicate)
         {
-            // Вытаскиваем шаблон сообщения об ошибке дубликата из ресурсов
             string duplicateMsg = System.Windows.Application.Current.Resources["Str_Err_ModuleDuplicate"] as string
                 ?? "Модуль с таким названием уже существует в этом проекте!";
             string warnTitle = System.Windows.Application.Current.Resources["Str_Title_Warning"] as string
@@ -756,26 +774,34 @@ public partial class MainViewModel : ObservableObject
             CheckedEntries = new List<SyntaxEntry>()
         };
 
-        // Замораживаем UI триггеры, чтобы избежать циклической перезаписи полей
         _isUpdatingFields = true;
         try
         {
-            // Добавляем строго в коллекцию текущего проекта
             SelectedProject.Modules.Add(newModule);
             Modules.Add(newModule);
 
-            // Пересоздаем технический корень для изоляции дерева
-            RootNode = new FileSystemNode
+            // ИСПРАВЛЕНО: Трехканальная полиморфная маршрутизация вместо слепого ProjectTreeManager!
+            if (SelectedProject.Type == ProjectType.GoogleDoc)
             {
-                Name = System.IO.Path.GetFileName(SelectedProject.RootPath),
-                FullPath = SelectedProject.RootPath,
-                IsFile = false
-            };
-
-            OnPropertyChanged(nameof(RootNode));
-            var manager = new ProjectTreeManager(SelectedProject, newModule);
-            FileSystemNode.ActiveManager = manager;
-            RootNode = manager.RootNode;
+                var bookManager = new BookTreeManager(SelectedProject, newModule);
+                FileSystemNode.ActiveManager = null;
+                RootNode = bookManager.RootNode;
+                _activeTreeManager = bookManager;
+            }
+            else if (SelectedProject.Type == ProjectType.WordDoc)
+            {
+                var wordManager = new WordTreeManager(SelectedProject, newModule);
+                FileSystemNode.ActiveManager = null;
+                RootNode = wordManager.RootNode;
+                _activeTreeManager = wordManager;
+            }
+            else
+            {
+                var codeManager = new ProjectTreeManager(SelectedProject, newModule);
+                FileSystemNode.ActiveManager = codeManager;
+                RootNode = codeManager.RootNode;
+                _activeTreeManager = codeManager;
+            }
 
             NewModuleNameInput = string.Empty;
         }
@@ -784,22 +810,24 @@ public partial class MainViewModel : ObservableObject
             _isUpdatingFields = false;
         }
 
-        // ИСПРАВЛЕНО: Переключаем фокус на новый модуль на следующем такте UI
         System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(() =>
         {
-            SelectedModule = newModule;
+            _isUpdatingFields = true;
+            try
+            {
+                SelectedModule = newModule;
+            }
+            finally
+            {
+                _isUpdatingFields = false;
+            }
+            OnPropertyChanged(nameof(IsModuleSelectorEnabled));
         }), System.Windows.Threading.DispatcherPriority.Background);
 
-        // ИСПРАВЛЕНО: Вызываем АВТОНОМНЫЙ метод Save у нашего объекта конфигурации, 
-        // не трогая коллекцию 'Projects' в MainViewModel и защищая ListBox от сброса!
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
         SelectedProject.Save(targetDir);
     }
-
-
-    // public bool IsModuleSelectorEnabled => SelectedProject != null && Modules != null && Modules.Count > 0;
-
 
     [RelayCommand]
     private void UpdateCurrentModuleName()
@@ -858,7 +886,53 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ================================================================= -->
-    // ИСПРАВЛЕНО: СТРОГОЕ РАЗДЕЛЕНИЕ ЦЕЛИКОВЫХ ФАЙЛОВ И ТОЧЕЧНЫХ ФУНКЦИЙ -->
+    // ИСПРАВЛЕНО: ЦЕНТРАЛИЗОВАННЫЙ ОБРАБОТЧИК КЛИКОВ ЧЕКБОКСОВ UI      -->
+    // ================================================================= -->
+    /// <summary>
+    /// Внешний централизованный перехватчик кликов CheckBox из TreeView.
+    /// Перенаправляет команду в BaseTreeManager, полностью исключая XOR-эффекты!
+    /// </summary>
+    public void HandleNodeCheckChanged(FileSystemNode? node, bool? newValue)
+    {
+        if (node == null || _activeTreeManager == null || _isUpdatingFields) return;
+
+        _isUpdatingFields = true;
+        try
+        {
+            // 1. ТВОЙ АЛГОРИТМ: Если кликнули по родительскому квадратику (null) — переводим в деактивацию (false)
+            bool targetState = newValue ?? false;
+
+            // Если папка горела галочкой или квадратиком — клик инвертирует всю ветку в сброс
+            if (node.Children.Count > 0 && (node.IsChecked == true || node.IsChecked == null))
+            {
+                targetState = false;
+            }
+
+            node.IsChecked = targetState;
+
+            // 2. СВЕРХУ ВНИЗ: Менеджер принудительно прошивает жесткий статус всем дочерним листьям
+            if (node.Children != null && node.Children.Count > 0)
+            {
+                _activeTreeManager.RecalculateChildrenCascade(node, targetState);
+            }
+
+            // 3. СНИЗУ ВВЕРХ: Менеджер рекурсивно пересчитывает строгий математический баланс родителей
+            if (node.Parent != null)
+            {
+                _activeTreeManager.RecalculateParentsBalance(node.Parent);
+            }
+        }
+        finally
+        {
+            _isUpdatingFields = false;
+        }
+
+        // Обновляем счетчики токенов на нижней панели интерфейса WPF
+        _ = RecalculateContextSizeAsync();
+    }
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ СЕЙВА СУГУБО ПО ЛИСТЬЯМ СТРУКТУРЫ        -->
     // ================================================================= -->
     public void SyncTreeWithModule()
     {
@@ -869,7 +943,7 @@ public partial class MainViewModel : ObservableObject
 
         bool isTextProject = SelectedProject?.Type == ProjectType.GoogleDoc || SelectedProject?.Type == ProjectType.WordDoc;
 
-        // 1. СБОР ДАННЫХ ДЛЯ ЛИТЕРАТУРНЫХ ПРОЕКТОВ (GOOGLE DOCS)
+        // 1. Сбор данных для литературных проектов прозы (Google Docs / MS Word)
         if (isTextProject)
         {
             var flatSyntaxList = new List<FileSystemNode>();
@@ -877,23 +951,27 @@ public partial class MainViewModel : ObservableObject
 
             foreach (var node in flatSyntaxList)
             {
-                if (node == null) continue;
-                SelectedModule.CheckedEntries.Add(new SyntaxEntry
+                if (node == null || string.IsNullOrEmpty(node.EntryPath)) continue;
+
+                // Сохраняем в JSON-конфиг СТРОГО конечные листья-главы романа!
+                bool isLeaf = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
+
+                if (isLeaf && node.IsChecked == true)
                 {
-                    FilePath = string.Empty,
-                    EntryPath = node.EntryPath,
-                    DisplayName = node.Name,
-                    Type = node.SyntaxType,
-                    SpanInfo = node.SyntaxSpanInfo
-                });
+                    SelectedModule.CheckedEntries.Add(new SyntaxEntry
+                    {
+                        FilePath = node.RelativePath ?? string.Empty,
+                        EntryPath = node.EntryPath,
+                        DisplayName = node.Name,
+                        Type = node.SyntaxType,
+                        SpanInfo = node.SyntaxSpanInfo
+                    });
+                }
             }
             return;
         }
 
-        // =================================================================
-        // 2. СБОР ДАННЫХ ДЛЯ ТЕХНИЧЕСКИХ ПРОЕКТОВ (КОД C# / SQL)
-        // Иерархически обходим дерево, четко разделяя файлы целиком и функции
-        // =================================================================
+        // 2. Сбор данных для технических проектов кода (C# / SQL)
         var allCheckedNodes = new List<FileSystemNode>();
         CollectAllCheckedNodesFlat(RootNode, allCheckedNodes);
 
@@ -901,26 +979,17 @@ public partial class MainViewModel : ObservableObject
         {
             if (node == null) continue;
 
-            // Сценарий А: Это физический файл кода (.cs, .sql)
             if (node.IsFile && !node.IsSyntaxNode && !string.IsNullOrEmpty(node.RelativePath))
             {
-                // Проверяем: если у файла нет детей, ИЛИ у него висит заглушка загрузки, 
-                // ИЛИ у него стоит жесткая галочка True (выбран целиком) - сохраняем его в CheckedFiles!
                 bool hasNoLoadedChildren = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
-
                 if (node.IsChecked == true || hasNoLoadedChildren)
                 {
                     if (!SelectedModule.CheckedFiles.Contains(node.RelativePath))
-                    {
                         SelectedModule.CheckedFiles.Add(node.RelativePath);
-                    }
                 }
             }
-            // Сценарий Б: Это синтаксический элемент (метод, класс, импорты) внутри файла
-            else if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
+            else if (node.IsSyntaxNode && node.IsChecked == true)
             {
-                // Нам нужно убедиться, что его родительский файл НЕ выбран целиком.
-                // Если родительский файл выбран целиком, сохранять отдельные функции нет смысла - файл и так улетит в контекст.
                 var parentFile = FindParentFileNode(node);
                 if (parentFile != null && parentFile.IsChecked != true)
                 {
@@ -937,13 +1006,14 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    /// <summary>
-    /// Вспомогательный плоский сборщик вообще всех чекнутых узлов дерева UI
-    /// </summary>
+    // ================================================================= -->
+    // ВОССТАНОВЛЕНО CS0103: ПЛОСКИЙ СБОРЩИК ВСЕХ ОТМЕЧЕННЫХ УЗЛОВ ДЛЯ КОДА -->
+    // ================================================================= -->
     private void CollectAllCheckedNodesFlat(FileSystemNode node, List<FileSystemNode> result)
     {
         if (node == null || result == null) return;
 
+        // Если узел отмечен галочкой или квадратиком — забираем в плоский список
         if (node.IsChecked == true || node.IsChecked == null)
         {
             result.Add(node);
@@ -952,9 +1022,34 @@ public partial class MainViewModel : ObservableObject
         var childrenCopy = new List<FileSystemNode>(node.Children);
         foreach (var child in childrenCopy)
         {
-            CollectAllCheckedNodesFlat(child, result);
+            if (child != null)
+            {
+                CollectAllCheckedNodesFlat(child, result);
+            }
         }
     }
+
+    private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
+    {
+        if (node == null || result == null) return;
+
+        // ИСПРАВЛЕНО: Узел берется в расчет, только если его личный статус IsChecked равен true,
+        // либо если это раскрытый родитель. Метод SyncTreeWithModule сам отфильтрует листья.
+        if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
+        {
+            result.Add(node);
+        }
+
+        var childrenCopy = new List<FileSystemNode>(node.Children);
+        foreach (var child in childrenCopy)
+        {
+            if (child != null)
+            {
+                CollectAllCheckedSyntaxNodes(child, result);
+            }
+        }
+    }
+
 
     /// <summary>
     /// Вспомогательный метод поиска родительского узла-файла для синтаксической ноды
@@ -1253,33 +1348,6 @@ public partial class MainViewModel : ObservableObject
         ExecuteSave(showMessage: false);
     }
 
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: БЕЗОШИБОЧНЫЙ СБОР СИНТАКСИСА ДЛЯ СОХРАНЕНИЯ В JSON    -->
-    // ================================================================= -->
-    private void CollectAllCheckedSyntaxNodes(FileSystemNode node, List<FileSystemNode> result)
-    {
-        if (node == null || result == null) return;
-
-        // Если узел является синтаксическим элементом и он выбран (True или Indeterminate квадратик)
-        if (node.IsSyntaxNode && (node.IsChecked == true || node.IsChecked == null))
-        {
-            // ИСПРАВЛЕНО: Для проектов кода мы сохраняем абсолютно ВСЕ выбранные синтаксические ноды, 
-            // независимо от флага IsFile, так как методы и свойства теперь являются листьями дерева!
-            result.Add(node);
-        }
-
-        // Безопасный рекурсивный обход дочерних элементов дерева
-        var childrenCopy = new List<FileSystemNode>(node.Children);
-        foreach (var child in childrenCopy)
-        {
-            if (child != null)
-            {
-                CollectAllCheckedSyntaxNodes(child, result);
-            }
-        }
-    }
-
-
     [RelayCommand]
     private void BrowseRootPath()
     {
@@ -1287,14 +1355,45 @@ public partial class MainViewModel : ObservableObject
         if (dialog.ShowDialog() == CommonFileDialogResult.Ok)
         {
             RootPath = dialog.FileName;
-            // ИСПРАВЛЕНО: Заменяем удаленный RefreshTreeView на монолитный ProjectTreeManager
+
             if (SelectedProject != null && SelectedModule != null)
             {
-                var manager = new ProjectTreeManager(SelectedProject, SelectedModule);
-                FileSystemNode.ActiveManager = manager;
-                RootNode = manager.RootNode;
-            }
+                _isUpdatingFields = true;
+                try
+                {
+                    SelectedProject.RootPath = RootPath;
 
+                    // ИСПРАВЛЕНО: Переинициализируем строго тот менеджер, который соответствует типу текущего проекта!
+                    if (SelectedProject.Type == ProjectType.GoogleDoc)
+                    {
+                        var bookManager = new BookTreeManager(SelectedProject, SelectedModule);
+                        FileSystemNode.ActiveManager = null;
+                        RootNode = bookManager.RootNode;
+                        _activeTreeManager = bookManager;
+                    }
+                    else if (SelectedProject.Type == ProjectType.WordDoc)
+                    {
+                        var wordManager = new WordTreeManager(SelectedProject, SelectedModule);
+                        FileSystemNode.ActiveManager = null;
+                        RootNode = wordManager.RootNode;
+                        _activeTreeManager = wordManager;
+                    }
+                    else
+                    {
+                        var codeManager = new ProjectTreeManager(SelectedProject, SelectedModule);
+                        FileSystemNode.ActiveManager = codeManager;
+                        RootNode = codeManager.RootNode;
+                        _activeTreeManager = codeManager;
+                    }
+                }
+                finally
+                {
+                    _isUpdatingFields = false;
+                }
+
+                OnPropertyChanged(nameof(RootNode));
+                _ = RecalculateContextSizeAsync();
+            }
         }
     }
 

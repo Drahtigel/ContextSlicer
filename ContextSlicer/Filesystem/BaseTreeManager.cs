@@ -2,19 +2,19 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace ContextSlicer.Filesystem;
 
-/// <summary>
-/// Базовый монолитный класс для всех менеджеров структур проектов.
-/// Обеспечивает сквозную унификацию построения карт, синхронизацию кэша и расчет Tri-State.
-/// </summary>
 public abstract class BaseTreeManager : IProjectTreeManager
 {
     protected readonly ProjectConfig Project;
     protected readonly ContextModule Module;
+
+    // Централизованная оперативная карта всех нод дерева для O(1) поиска
+    protected readonly Dictionary<string, FileSystemNode> UniqueMap = new(StringComparer.OrdinalIgnoreCase);
 
     public FileSystemNode RootNode { get; protected set; } = null!;
 
@@ -24,25 +24,97 @@ public abstract class BaseTreeManager : IProjectTreeManager
         Module = module ?? throw new ArgumentNullException(nameof(module));
     }
 
-    /// <summary>
-    /// Контракт на асинхронный подсчет символов контента, уникальный для каждого типа проекта.
-    /// </summary>
     public abstract Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token);
-
-    /// <summary>
-    /// Возвращает список файлов, выбранных целиком (перегружается в менеджере кода).
-    /// </summary>
     public virtual List<string> GetCheckedFiles() => new();
 
-    /// <summary>
-    /// Возвращает стерильный список точечно выбранных элементов конфигурации модуля.
-    /// </summary>
     public List<SyntaxEntry> GetSelectedEntries()
     {
         return Module.CheckedEntries != null
             ? Module.CheckedEntries.Where(e => e != null).ToList()
             : new List<SyntaxEntry>();
     }
+
+    // ================================================================= -->
+    // ЦЕНТРАЛИЗОВАННЫЙ СУПЕР-КАЛЬКУЛЯТОР СВЕРХУ ВНИЗ И СНИЗУ ВВЕРХ      -->
+    // ================================================================= -->
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ЖЕСТКАЯ ПУБЛИКАЦИЯ СИГНАЛОВ ДЛЯ СИНХРОНИЗАЦИИ WPF UI  -->
+    // ================================================================= -->
+    /// <summary>
+    /// Пробивает статус true/false вниз и принудительно уведомляет биндинги WPF!
+    /// </summary>
+    public void RecalculateChildrenCascade(FileSystemNode parentNode, bool targetState)
+    {
+        if (parentNode == null || parentNode.Children == null) return;
+
+        foreach (var child in parentNode.Children)
+        {
+            if (child == null || child.Name == "LoadingStub...") continue;
+
+            // Жестко выставляем внутренний флаг
+            child.IsChecked = targetState;
+
+            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Принудительно пинаем UI-уведомления для каждого ребенка!
+            child.NotifyComputedStateChanged();
+
+            // Рекурсивно шагаем до самого низа структуры
+            RecalculateChildrenCascade(child, targetState);
+        }
+    }
+
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: МАТЕМАТИЧЕСКИ СТРОГИЙ КАЛЬКУЛЯТОР БАЛАНСА РОДИТЕЛЕЙ   -->
+    // ================================================================= -->
+    public void RecalculateParentsBalance(FileSystemNode? parentNode)
+    {
+        if (parentNode == null || parentNode.Children == null || parentNode.Children.Count == 0) return;
+
+        bool hasChecked = false;
+        bool hasUnchecked = false;
+        bool hasIndeterminate = false;
+
+        // Обходим только прямых детей текущего узла
+        for (int i = 0; i < parentNode.Children.Count; i++)
+        {
+            var child = parentNode.Children[i];
+
+            // Пропускаем заглушку ленивой загрузки, она не участвует в балансе веса
+            if (child == null || child.Name == "LoadingStub...") continue;
+
+            // Опрашиваем живое вычисленное состояние ребенка
+            bool? childState = child.IsChecked;
+
+            if (childState == true) hasChecked = true;
+            else if (childState == false) hasUnchecked = true;
+            else hasIndeterminate = true;
+        }
+
+        bool? newParentState;
+
+        // Строгий логический конъюнкт Tri-State структуры
+        if (hasIndeterminate || (hasChecked && hasUnchecked))
+            newParentState = null; // Каша или квадратик у детей -> папка горит квадратиком
+        else if (hasChecked && !hasUnchecked)
+            newParentState = true; // Все дети выбраны -> папка горит галочкой
+        else
+            newParentState = false; // Все дети пустые -> папка гаснет
+
+        if (parentNode.IsChecked != newParentState)
+        {
+            parentNode.IsChecked = newParentState;
+
+            // Принудительно заставляем WPF мгновенно перерисовать этот родительский узел
+            parentNode.NotifyComputedStateChanged();
+        }
+
+        // Рекурсивно поднимаем волну пересчета по вертикали власти до самого верха репозитория
+        if (parentNode.Parent != null)
+        {
+            RecalculateParentsBalance(parentNode.Parent);
+        }
+    }
+
 
     /// <summary>
     /// Унифицированный рекурсивный построитель карты нод O(1) для быстрого сличения состояний.
@@ -68,10 +140,11 @@ public abstract class BaseTreeManager : IProjectTreeManager
     /// </summary>
     protected void RestoreCheckedStatesFromConfig(FileSystemNode localRoot)
     {
-        var uniqueMap = new Dictionary<string, FileSystemNode>(StringComparer.OrdinalIgnoreCase);
-        BuildNodesMapInternal(localRoot, uniqueMap);
+        // Очищаем и заново строим глобальную карту нод текущего менеджера
+        UniqueMap.Clear();
+        BuildNodesMapInternal(localRoot, UniqueMap);
 
-        // Хэш-сет сохраненных точечных элементов
+        // Хэш-сет сохраненных в JSON точечных элементов
         var savedEntriesSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (Module.CheckedEntries != null)
         {
@@ -82,29 +155,32 @@ public abstract class BaseTreeManager : IProjectTreeManager
             }
         }
 
-        // Выполняем точечную накатку только на конечные листья структуры
-        foreach (var nodePair in uniqueMap)
+        // 1. Сначала накатываем жесткие состояния true/false строго на конечные листья-главы
+        foreach (var nodePair in UniqueMap)
         {
             var node = nodePair.Value;
-            if (node == null) continue;
+            if (node == null || !node.IsSyntaxNode) continue;
 
-            // Если это литературный синтаксический узел (заголовок или вкладка)
-            if (node.IsSyntaxNode)
+            bool isLeafNode = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
+            if (isLeafNode)
             {
-                bool isLeafNode = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
-                if (isLeafNode)
-                {
-                    bool isSaved = savedEntriesSet.Contains(node.EntryPath);
-                    node.SetChecked(isSaved, updateChildren: false, updateParent: false);
-                }
-                else
-                {
-                    node.SetChecked(null, updateChildren: false, updateParent: false);
-                }
+                bool isSaved = savedEntriesSet.Contains(node.EntryPath);
+                node.IsChecked = isSaved;
             }
         }
 
-        // Запускаем один сквозной, безопасный Tri-State пересчет снизу вверх для всего дерева на UI
-        localRoot.NotifyComputedStateChanged();
+        // 2. ТВОЙ АЛГОРИТМ (СНИЗУ ВВЕРХ): Один раз рекурсивно пересчитываем баланс родителей для всего дерева!
+        // Проходим по листьям и пинаем расчет их родителей — папки пассивно примут идеальные квадратики или галочки.
+        foreach (var nodePair in UniqueMap)
+        {
+            var node = nodePair.Value;
+            if (node == null || !node.IsSyntaxNode) continue;
+
+            bool isLeafNode = node.Children.Count == 0 || (node.Children.Count == 1 && node.Children[0].Name == "LoadingStub...");
+            if (isLeafNode && node.Parent != null)
+            {
+                RecalculateParentsBalance(node.Parent);
+            }
+        }
     }
 }
