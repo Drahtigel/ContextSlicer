@@ -79,9 +79,47 @@ public class FileSystemNode : INotifyPropertyChanged
     /// Прямой мост к свойству IsChecked. Полностью исключает внутренние 
     /// Roslyn-блокировки и циклическое затирание данных при ленивой загрузке.
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ДИНАМИЧЕСКИЙ ГЕТТЕР БАЛАНСА СНИЗУ ВВЕРХ ДЛЯ UI       -->
+    // ================================================================= -->
     public bool? ComputedState
     {
-        get => _isChecked;
+        get
+        {
+            // 1. Если это конечный лист структуры (метод, заголовок или файл без детей) — отдаем его флаг
+            if (Children == null || Children.Count == 0 || (Children.Count == 1 && Children[0].Name == "LoadingStub..."))
+            {
+                return _isChecked;
+            }
+
+            // 2. ИСПРАВЛЕНО (ТВОЯ ФОРМУЛА): Динамически вычисляем статус контейнера (класса/namespace/папки) по детям!
+            bool hasChecked = false;
+            bool hasUnchecked = false;
+            bool hasIndeterminate = false;
+
+            for (int i = 0; i < Children.Count; i++)
+            {
+                var child = Children[i];
+                if (child == null || child.Name == "LoadingStub...") continue;
+
+                // Рекурсивно запрашиваем вычисленное состояние ребенка
+                var childState = child.ComputedState;
+                if (childState == true) hasChecked = true;
+                else if (childState == false) hasUnchecked = true;
+                else hasIndeterminate = true;
+            }
+
+            // Если у детей каша или квадратик — узел ОБЯЗАН загореться квадратиком (null)!
+            if (hasIndeterminate || (hasChecked && hasUnchecked))
+                return null;
+
+            // Если абсолютно все дети true — горит галочка
+            if (hasChecked && !hasUnchecked)
+                return true;
+
+            // Если абсолютно все дети false — пусто
+            return false;
+        }
         set
         {
             if (_isChecked != value)
@@ -90,7 +128,6 @@ public class FileSystemNode : INotifyPropertyChanged
                 OnPropertyChanged(nameof(IsChecked));
                 OnPropertyChanged(nameof(ComputedState));
 
-                // Пробрасываем сигнал клика в центральный Медиатор
                 if (ActiveManager != null)
                 {
                     if (Children != null && Children.Count > 0)
@@ -107,6 +144,7 @@ public class FileSystemNode : INotifyPropertyChanged
     }
 
 
+
     public void NotifyComputedStateChanged()
     {
         // Выбрасываем стандартные асинхронные уведомления для биндера WPF
@@ -115,30 +153,26 @@ public class FileSystemNode : INotifyPropertyChanged
         Parent?.NotifyComputedStateChanged();
     }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: СТЕРИЛЬНЫЙ ПАССИВНЫЙ УСТАНОВИВАТЕЛЬ ФЛАГОВ НОДЫ       -->
+    // ================================================================= -->
     /// <summary>
-    /// Бронебойный сквозной транслятор. Прошивает всю вертикаль дерева строго сверху вниз.
+    /// Исторический метод-мост. Теперь просто записывает переданное значение 
+    /// без самовольного затирания флагов файлов и папок в null!
     /// </summary>
     public void SetChecked(bool? value, bool updateChildren, bool updateParent)
     {
-        // Только конечный лист-глава имеет право физически сохранить флаг
-        if (Children == null || Children.Count == 0 || (Children.Count == 1 && Children[0].Name == "LoadingStub..."))
-        {
-            _isChecked = value;
-        }
-        else
-        {
-            _isChecked = null; // Папки никогда не удерживают личный статус в обход детей!
-        }
+        // Нода больше не пытается умничать. Что менеджер приказал — то и пишем!
+        _isChecked = value;
 
         OnPropertyChanged(nameof(IsChecked));
         OnPropertyChanged(nameof(ComputedState));
 
-        // Бескомпромиссный спуск жесткого статуса (true/false) до самых глубоких листьев-глав
+        // Если запрошен каскад вниз силами старых вызывателей
         if (updateChildren && Children != null && Children.Count > 0)
         {
-            for (int i = 0; i < Children.Count; i++)
+            foreach (var child in Children)
             {
-                var child = Children[i];
                 if (child != null && child.Name != "LoadingStub...")
                 {
                     child.SetChecked(value, updateChildren: true, updateParent: false);
@@ -146,12 +180,13 @@ public class FileSystemNode : INotifyPropertyChanged
             }
         }
 
-        // Пересчет баланса по цепочке вверх к корню репозитория
+        // Если запрошен каскад вверх силами старых вызывателей
         if (updateParent)
         {
             Parent?.NotifyComputedStateChanged();
         }
     }
+
 
 
     public string TypeLocalKey

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using ContextSlicer.ContextBuilder;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -122,7 +123,7 @@ public class WordTreeManager : BaseTreeManager
     }
 
     // ================================================================= -->
-    // ИСПРАВЛЕНО: АВТОНОМНЫЙ ПАССИВНЫЙ ПОДСЧЕТ СИМВОЛОВ И ТАБЛИЦ WORD   -->
+    // ИСПРАВЛЕНО: ПЕРЕНАПРАВЛЕНИЕ ПОДСЧЕТА НА НАШ НОВЫЙ ООП-СБОРЩИК WORD  -->
     // ================================================================= -->
     public override async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
     {
@@ -132,77 +133,13 @@ public class WordTreeManager : BaseTreeManager
             return 0;
         }
 
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using (var wordDoc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(_docFilePath, false))
-                {
-                    var mainPart = wordDoc.MainDocumentPart;
-                    if (mainPart == null || mainPart.Document == null || mainPart.Document.Body == null) return 0L;
+        // Вызываем наш специализированный ContextBuilderWord!
+        var wordBuilder = new ContextBuilderWord(string.Empty, string.Empty, includeDirectoryStructure, false);
 
-                    long totalLength = 0;
-                    var bodyElements = mainPart.Document.Body.ChildElements;
-                    var selectedPathsSet = new HashSet<string>(activeEntries.Select(e => e.EntryPath), StringComparer.OrdinalIgnoreCase);
+        var dummyCheckedFiles = new List<FileSystemNode> { this.RootNode };
+        var sb = await wordBuilder.BuildTextContentAsync(dummyCheckedFiles, activeEntries, token);
 
-                    if (includeDirectoryStructure)
-                    {
-                        foreach (string path in selectedPathsSet) totalLength += path.Length + 5;
-                    }
-
-                    string currentChapterPath = string.Empty;
-                    var activePaths = new Dictionary<int, string> { { 0, string.Empty } };
-
-                    foreach (var element in bodyElements)
-                    {
-                        token.ThrowIfCancellationRequested();
-
-                        if (element is DocumentFormat.OpenXml.Wordprocessing.Paragraph paragraph)
-                        {
-                            var textNodes = paragraph.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().ToList();
-                            int elementLength = textNodes.Sum(t => (t.Text ?? string.Empty).Length);
-                            string styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? string.Empty;
-
-                            if (!string.IsNullOrEmpty(styleId) && styleId.StartsWith("Heading", StringComparison.OrdinalIgnoreCase)
-                                && int.TryParse(styleId.Substring(7), out int level))
-                            {
-                                string headingText = string.Concat(textNodes.Select(t => t.Text ?? string.Empty)).Trim();
-                                if (!string.IsNullOrEmpty(headingText))
-                                {
-                                    int targetParentLevel = level - 1;
-                                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel)) targetParentLevel--;
-
-                                    string parentPath = activePaths[targetParentLevel];
-                                    currentChapterPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
-
-                                    activePaths[level] = currentChapterPath;
-                                    var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
-                                    foreach (var key in keysToRemove) activePaths.Remove(key);
-                                }
-                            }
-
-                            if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
-                            {
-                                totalLength += elementLength;
-                            }
-                        }
-                        else if (element is DocumentFormat.OpenXml.Wordprocessing.Table table)
-                        {
-                            if (!string.IsNullOrEmpty(currentChapterPath) && selectedPathsSet.Contains(currentChapterPath))
-                            {
-                                totalLength += table.Descendants<DocumentFormat.OpenXml.Wordprocessing.TableCell>()
-                                    .Sum(c => c.Descendants<DocumentFormat.OpenXml.Wordprocessing.Text>().Sum(t => (t.Text ?? string.Empty).Length));
-                            }
-                        }
-                    }
-                    return totalLength;
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Word Size Calculation Error] {ex.Message}");
-                return 0L;
-            }
-        }, token);
+        return sb?.Length ?? 0;
     }
+
 } // Финальное закрытие класса!

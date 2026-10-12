@@ -1850,6 +1850,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _currentProgressValue = 0;
     [ObservableProperty] private string _currentProgressStatus = string.Empty;
     // КНОПКА ОК: Комплексная валидация с учетом перечисления ProjectType
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АТОМАРНОЕ ЗАЩИЩЕННОЕ СОХРАНЕНИЕ НАСТРОЕК КАРТОЧКИ     -->
+    // ================================================================= -->
     [RelayCommand]
     private async Task ConfirmSaveProjectConfig()
     {
@@ -1857,14 +1860,12 @@ public partial class MainViewModel : ObservableObject
         string rootPath = EditProjectRootPathInput?.Trim() ?? string.Empty;
         string outPath = EditProjectOutputPathInput?.Trim() ?? string.Empty;
 
-        // 1. Валидация на пустые строки
         if (string.IsNullOrWhiteSpace(projName) || string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(outPath))
         {
             MessageBox.Show("Все поля обязательны для заполнения!", "Ошибка валидации", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        // 2. Проверка спецсимволы в имени проекта
         char[] invalidChars = Path.GetInvalidFileNameChars();
         if (projName.Any(c => invalidChars.Contains(c)))
         {
@@ -1872,7 +1873,6 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // 3. Проверка на уникальность имени среди ДРУГИХ проектов
         bool isDuplicate = Projects.Any(p => p.ProjectName.Equals(projName, StringComparison.OrdinalIgnoreCase) && p != SelectedProject);
         if (isDuplicate)
         {
@@ -1880,7 +1880,6 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // 4. Проверка и создание выходной папки результатов
         if (!Directory.Exists(outPath))
         {
             try { Directory.CreateDirectory(outPath); }
@@ -1891,58 +1890,38 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // ИСПРАВЛЕНО: Строго определяем тип проекта по актуальным радиокнопкам оверлея
         ProjectType selectedType = ProjectType.Folder;
-        if (IsGoogleDocSelected)
-        {
-            selectedType = ProjectType.GoogleDoc;
-        }
-        else if (IsWordDocSelected)
-        {
-            selectedType = ProjectType.WordDoc;
-        }
-        else if (IsLocalFolderSelected)
-        {
-            selectedType = ProjectType.Folder;
-        }
+        if (IsGoogleDocSelected) selectedType = ProjectType.GoogleDoc;
+        else if (IsWordDocSelected) selectedType = ProjectType.WordDoc;
+        else if (IsLocalFolderSelected) selectedType = ProjectType.Folder;
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ПОЛНАЯ ЛОКАЛИЗАЦИЯ ПРОВЕРКИ ДОСТУПНОСТИ ИСТОЧНИКОВ     -->
-        // ================================================================= -->
-        // 5. Проверка доступности источников перед фиксацией
-        string pathErrorTitle = Application.Current.Resources["Str_Err_ValidationTitle"] as string
-                                ?? "Ошибка пути";
+        string pathErrorTitle = Application.Current.Resources["Str_Err_ValidationTitle"] as string ?? "Ошибка пути";
 
         if (selectedType == ProjectType.Folder && !Directory.Exists(rootPath))
         {
-            string folderErr = Application.Current.Resources["Str_Err_FolderNotExists"] as string
-                               ?? "Указанная локальная папка источника данных не существует!";
+            string folderErr = Application.Current.Resources["Str_Err_FolderNotExists"] as string ?? "Указанная локальная папка источника данных не существует!";
             MessageBox.Show(folderErr, pathErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
         if (selectedType == ProjectType.WordDoc && !File.Exists(rootPath))
         {
-            string wordErr = Application.Current.Resources["Str_Err_WordNotExists"] as string
-                             ?? "Указанный файл MS Word не найден на диске!";
+            string wordErr = Application.Current.Resources["Str_Err_WordNotExists"] as string ?? "Указанный файл MS Word не найден на диске!";
             MessageBox.Show(wordErr, pathErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
-
 
         if (selectedType == ProjectType.GoogleDoc)
         {
             if (string.IsNullOrEmpty(GoogleDownloader.ExtractDocumentId(rootPath)))
             {
-                string idErr = Application.Current.Resources["Str_Err_InvalidServiceAccount"] as string ?? "Строка не содержит валидный ID!";
-                MessageBox.Show(idErr, "ID Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Строка не содержит валидный ID!", "ID Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             IsProjectLoading = true;
             try
             {
-                // Подгружаем текст состояния из словаря локализации
                 ProgressValue = 40;
                 ProgressText = Application.Current.Resources["Str_Update_LoadingGoogleDoc"] as string ?? "Скачивание структуры из облака Google...";
 
@@ -1953,9 +1932,7 @@ public partial class MainViewModel : ObservableObject
                 if (!success)
                 {
                     IsProjectLoading = false;
-                    string errorMsg = Application.Current.Resources["Str_Err_GoogleDocUnavailable"] as string ?? "Google Документ недоступен!";
-                    string errorTitle = Application.Current.Resources["Str_Err_NetworkTitle"] as string ?? "Ошибка сети";
-                    MessageBox.Show(errorMsg, errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show("Google Документ недоступен!", "Ошибка сети", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
                 ProgressValue = 100;
@@ -1967,57 +1944,122 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        // ... Завершение сохранения в модель конфигурации проекта и SilentSave ...
-        ProjectConfig? targetProject = SelectedProject;
-        if (targetProject == null || EditProjectNameInput != targetProject.ProjectName)
-        {
-            targetProject = new ProjectConfig();
-            Projects.Add(targetProject);
-        }
-        targetProject.ProjectName = projName;
-        targetProject.RootPath = rootPath;
-        targetProject.OutputPath = outPath;
-        targetProject.Type = selectedType;
-        IsProjectOverlayVisible = false;
-        SelectedProject = targetProject;
         // ================================================================= -->
-        // ИСПРАВЛЕНО: ИНИЦИАЛИЗАЦИЯ СТРУКТУРЫ ДЛЯ ВСЕХ ТИПОВ ПРОЕКТОВ ИЗ ОКНА СЕЙВА -->
+        // БРОНЕБОЙНАЯ ЗАЩИТА ТЕКУЩЕГО ВЫДЕЛЕННОГО МОДУЛЯ ОТ СБРОСОВ И КАШИ   -->
         // ================================================================= -->
-        targetProject.IncludeImages = EditProjectIncludeImagesInput;
-        IncludeImages = EditProjectIncludeImagesInput;
+        // 1. Снайперски запоминаем имя текущего рабочего модуля ДО перезаписи полей!
+        string activeModuleNameBeforeSave = SelectedModule?.ModuleName ?? string.Empty;
 
-        // ИСПРАВЛЕНО: Инициализируем структуру через правильный менеджер в зависимости от типа
-        var currentModule = targetProject.Modules.FirstOrDefault();
-        if (currentModule != null)
+        // Взводим флаг глобальной блокировки триггеров re-entrancy!
+        // Теперь OnSelectedProjectChanged не сможет самовольно переключить ComboBox на индекс 0!
+        _isUpdatingFields = true;
+        try
         {
-            if (targetProject.Type == ProjectType.GoogleDoc)
+            ProjectConfig? targetProject = SelectedProject;
+
+            // Если это создание нового проекта с нуля
+            if (targetProject == null || EditProjectNameInput != targetProject.ProjectName)
             {
-                var bookManager = new BookTreeManager(targetProject, currentModule);
-                FileSystemNode.ActiveManager = null;
-                RootNode = bookManager.RootNode;
-                _activeTreeManager = bookManager;
+                // При изменении имени проекта удаляем старый файл-призрак с диска
+                if (targetProject != null)
+                {
+                    try
+                    {
+                        string oldAppData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                        string oldTargetDir = Path.Combine(oldAppData, "ContextSlicer", "projects");
+                        string oldSafeName = string.Concat(targetProject.ProjectName.Split(Path.GetInvalidFileNameChars())).Trim();
+                        string oldFilePath = Path.Combine(oldTargetDir, $"{oldSafeName}.json");
+                        if (File.Exists(oldFilePath)) File.Delete(oldFilePath);
+                    }
+                    catch { }
+                }
+
+                targetProject = new ProjectConfig();
+                Projects.Add(targetProject);
             }
-            // ДОБАВЛЕНО: Безопасный упреждающий запуск WordTreeManager при сохранении карточки настроек
-            else if (targetProject.Type == ProjectType.WordDoc)
+
+            // 2. Накатываем новые валидированные параметры в конфигурацию
+            targetProject.ProjectName = projName;
+            targetProject.RootPath = rootPath;
+            targetProject.OutputPath = outPath;
+            targetProject.Type = selectedType;
+            targetProject.IncludeImages = EditProjectIncludeImagesInput;
+
+            // Записываем обновленные модули и правила
+            targetProject.Modules = Modules.ToList();
+            targetProject.PromptRules = PromptRules;
+
+            // Синхронизируем UI свойства ввода
+            ProjectNameInput = projName;
+            RootPath = rootPath;
+            OutputPath = outPath;
+            IncludeImages = EditProjectIncludeImagesInput;
+
+            // Фиксируем обновленный проект как выделенный
+            SelectedProject = targetProject;
+            Modules = new ObservableCollection<ContextModule>(targetProject.Modules);
+
+            // 3. ВОССТАНОВЛЕНИЕ КОНТЕКСТА: Ищем твой рабочий модуль по сохраненному имени
+            var currentModule = targetProject.Modules.FirstOrDefault(m => m.ModuleName.Equals(activeModuleNameBeforeSave, StringComparison.OrdinalIgnoreCase))
+                                ?? targetProject.Modules.FirstOrDefault();
+
+            if (currentModule != null)
             {
-                var wordManager = new WordTreeManager(targetProject, currentModule);
-                FileSystemNode.ActiveManager = null;
-                RootNode = wordManager.RootNode;
-                _activeTreeManager = wordManager;
+                SelectedModule = currentModule;
+
+                ModuleNameInput = currentModule.ModuleName;
+                ContextFileName = currentModule.ContextFileName;
+                ModuleRules = currentModule.ModuleRules;
+
+                // 4. Чисто и полиморфно инициализируем нужный менеджер дерева для обновленных путей
+                if (targetProject.Type == ProjectType.GoogleDoc)
+                {
+                    var bookManager = new BookTreeManager(targetProject, currentModule);
+                    FileSystemNode.ActiveManager = null;
+                    RootNode = bookManager.RootNode;
+                    _activeTreeManager = bookManager;
+                }
+                else if (targetProject.Type == ProjectType.WordDoc)
+                {
+                    var wordManager = new WordTreeManager(targetProject, currentModule);
+                    FileSystemNode.ActiveManager = null;
+                    RootNode = wordManager.RootNode;
+                    _activeTreeManager = wordManager;
+                }
+                else
+                {
+                    var codeManager = new ProjectTreeManager(targetProject, currentModule);
+                    FileSystemNode.ActiveManager = codeManager;
+                    RootNode = codeManager.RootNode;
+                    _activeTreeManager = codeManager;
+                }
             }
             else
             {
-                var codeManager = new ProjectTreeManager(targetProject, currentModule);
-                FileSystemNode.ActiveManager = codeManager;
-                RootNode = codeManager.RootNode;
-                _activeTreeManager = codeManager;
+                // Если модулей нет вообще — строим пустой каркас
+                BuildTreeForNoModule(targetProject);
             }
+
+            // Физически пишем атомарный JSON проекта на жесткий диск
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
+            targetProject.Save(targetDir);
+        }
+        finally
+        {
+            // Снимаем блокировку, возвращая управление интерфейсу WPF
+            _isUpdatingFields = false;
         }
 
-        SilentSave();
+        // Обновляем текстовые свойства заголовков формы и форсируем пересчет токенов
+        OnPropertyChanged(nameof(IsModuleSelectorEnabled));
+        OnPropertyChanged(nameof(DisplayProjectName));
+        OnPropertyChanged(nameof(RootNode));
 
-
+        _ = RecalculateContextSizeAsync();
+        IsProjectOverlayVisible = false;
     }
+
     // Изолированное буферное поле для безопасного ввода ключа в интерфейсе оверлея
     [ObservableProperty] private string _editGoogleApiKeyInput = string.Empty;
 

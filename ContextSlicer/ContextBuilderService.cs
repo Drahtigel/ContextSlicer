@@ -127,4 +127,18 @@ public static class ContextBuilderService
             if (child != null) GetCheckedFilesExtended(child, result);
         }
     }
+
+    // ================================================================= -->
+    // ДОБАВЛЕНО: СЕРВИСНЫЙ МОСТ ДЛЯ ВЫЗОВА АВТОНОМНОГО ПОДСЧЕТА WEIGHT   -->
+    // ================================================================= -->
+    public static async Task<(int Characters, int Tokens)> GetContextSizeAsync(
+        ProjectType projectType, bool includeDirectoryStructure,
+        List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries,
+        CancellationToken token)
+    {
+        // Создаем нужный билдер налету и просим его посчитать вес самостоятельно!
+        var builder = CreateBuilder(projectType, string.Empty, string.Empty, includeDirectoryStructure, false);
+        return await builder.CalculateSizeAsync(checkedFiles, savedEntries, token);
+    }
+
 }

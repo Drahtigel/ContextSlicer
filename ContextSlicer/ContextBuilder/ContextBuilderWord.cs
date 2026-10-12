@@ -11,38 +11,29 @@ using ContextSlicer.Filesystem;
 
 namespace ContextSlicer.ContextBuilder;
 
-/// <summary>
-/// Изолированный сборщик контекста ИИ для проектов локальных документов MS Word (.docx).
-/// Вычитывает структуру напрямую из файла и генерирует форматы TXT/PDF с контролем каскада родителей.
-/// </summary>
 public class ContextBuilderWord : ContextBuilderBase
 {
     public ContextBuilderWord(string promptRules, string moduleRules, bool includeDirectoryStructure, bool includeImages)
         : base(promptRules, moduleRules, includeDirectoryStructure, includeImages) { }
 
     public override async Task<StringBuilder> BuildTextContentAsync(
-        List<FileSystemNode> checkedFiles,
-        List<SyntaxEntry> savedEntries,
-        CancellationToken token)
+        List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries, CancellationToken token)
     {
         var sb = new StringBuilder();
         if (savedEntries == null || savedEntries.Count == 0) return sb;
 
-        // Жестко извлекаем абсолютный путь к локальному файлу .docx из корня дерева
         string docxPath = checkedFiles?.FirstOrDefault()?.FullPath
             ?? savedEntries.FirstOrDefault(e => e != null && !string.IsNullOrEmpty(e.FilePath))?.FilePath
             ?? string.Empty;
 
         if (string.IsNullOrEmpty(docxPath) || !File.Exists(docxPath)) return sb;
 
-        // Выгружаем общие правила промпта из абстрактного класса
         AppendSystemRules(sb);
 
         var selectedPathsSet = new HashSet<string>(
             savedEntries.Where(e => e != null).Select(e => e.EntryPath),
             StringComparer.OrdinalIgnoreCase);
 
-        // Генерация оглавления для Word с честными атрибутами id, level и type
         if (IncludeDirectoryStructure)
         {
             sb.AppendLine("<document_structure>");
@@ -57,14 +48,10 @@ public class ContextBuilderWord : ContextBuilderBase
             sb.AppendLine("</document_structure>\n");
         }
 
-        // Запускаем асинхронный итератор тела документа Word
         await ProcessWordBodyElementsInternalAsync(sb, docxPath, selectedPathsSet, token);
-
         return sb;
     }
-    /// <summary>
-    /// Линейный обход XML-структур OpenXML: собирает главы и таблицы с жестким контролем каскада родителей.
-    /// </summary>
+
     private async Task ProcessWordBodyElementsInternalAsync(
         StringBuilder sb, string docxPath, HashSet<string> selectedPathsSet, CancellationToken token)
     {
@@ -77,9 +64,23 @@ public class ContextBuilderWord : ContextBuilderBase
                     var mainPart = wordDoc.MainDocumentPart;
                     if (mainPart?.Document?.Body == null) return;
 
-                    string currentChapterPath = string.Empty;
-                    var activePaths = new Dictionary<int, string> { { 0, string.Empty } };
                     var bodyElements = mainPart.Document.Body.ChildElements;
+                    var approvedHeadingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var entryMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var path in selectedPathsSet)
+                    {
+                        if (string.IsNullOrEmpty(path)) continue;
+                        string pureName = path.Split('/').LastOrDefault()?.Trim().TrimEnd('.') ?? string.Empty;
+                        if (!string.IsNullOrEmpty(pureName))
+                        {
+                            approvedHeadingNames.Add(pureName);
+                            entryMap[pureName] = path;
+                        }
+                    }
+
+                    bool isCurrentParagraphApproved = false;
+                    string activeElementId = string.Empty;
 
                     foreach (var element in bodyElements)
                     {
@@ -88,11 +89,8 @@ public class ContextBuilderWord : ContextBuilderBase
                         if (element is Paragraph paragraph)
                         {
                             var textNodes = paragraph.Descendants<Text>().ToList();
-
                             string pText = string.Concat(textNodes.Select(t => t.Text ?? string.Empty))
-                                             .Replace("\r", "")
-                                             .Replace("\n", "")
-                                             .Replace("\u00A0", " ");
+                                             .Replace("\r", "").Replace("\n", "").Replace("\u00A0", " ");
 
                             string styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value ?? string.Empty;
                             string cleanStyleId = styleId.Replace(" ", "");
@@ -103,43 +101,43 @@ public class ContextBuilderWord : ContextBuilderBase
 
                             if (isHeading)
                             {
-                                string levelDigits = new string(cleanStyleId.Where(char.IsDigit).ToArray());
-                                if (!int.TryParse(levelDigits, out int level)) level = 1;
-
                                 string headingText = pText.Trim();
-                                if (!string.IsNullOrEmpty(headingText))
+                                string cleanHeadingName = headingText.TrimEnd('.');
+
+                                if (!string.IsNullOrEmpty(cleanHeadingName))
                                 {
-                                    int targetParentLevel = level - 1;
-                                    while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel)) targetParentLevel--;
-
-                                    string parentPath = activePaths[targetParentLevel];
-                                    currentChapterPath = string.IsNullOrEmpty(parentPath) ? headingText : $"{parentPath}/{headingText}";
-
-                                    activePaths[level] = currentChapterPath;
-                                    var keysToRemove = activePaths.Keys.Where(k => k > level).ToList();
-                                    foreach (var key in keysToRemove) activePaths.Remove(key);
-
-                                    // Тег заголовка генерируется строго при валидности всей вертикали родителей
-                                    if (IsPathChainValid(currentChapterPath, selectedPathsSet))
+                                    if (isCurrentParagraphApproved && !string.IsNullOrEmpty(activeElementId))
                                     {
-                                        string elementId = "h_" + unchecked((uint)currentChapterPath.GetHashCode()).ToString("x8");
-                                        sb.AppendLine($"<heading id=\"{elementId}\" path=\"{currentChapterPath}\">");
+                                        sb.AppendLine($"</heading id=\"{activeElementId}\">");
+                                        activeElementId = string.Empty;
+                                    }
+
+                                    if (approvedHeadingNames.Contains(cleanHeadingName))
+                                    {
+                                        isCurrentParagraphApproved = true;
+                                        entryMap.TryGetValue(cleanHeadingName, out string? fullPath);
+                                        string finalPath = fullPath ?? cleanHeadingName;
+                                        activeElementId = "h_" + unchecked((uint)finalPath.GetHashCode()).ToString("x8");
+
+                                        sb.AppendLine($"<heading id=\"{activeElementId}\" path=\"{finalPath}\">");
                                         sb.AppendLine($"  {headingText}");
+                                    }
+                                    else
+                                    {
+                                        isCurrentParagraphApproved = false;
+                                        activeElementId = string.Empty;
                                     }
                                 }
                             }
-                            // Абзацы текста добавляются строго при валидности всей родительской цепочки
-                            else if (!string.IsNullOrEmpty(currentChapterPath) &&
-                                     IsPathChainValid(currentChapterPath, selectedPathsSet) &&
-                                     !string.IsNullOrWhiteSpace(pText))
+                            else if (isCurrentParagraphApproved && !string.IsNullOrWhiteSpace(pText))
                             {
                                 sb.AppendLine($"  {pText.Trim()}");
                             }
                         }
+                        // В) ОБРАБОТКА ТАБЛИЦ ВНУТРИ ОДОБРЕННЫХ ГЛАВ WORD
                         else if (element is Table table)
                         {
-                            // Таблицы вычитываются строго при валидности всей родительской цепочки
-                            if (!string.IsNullOrEmpty(currentChapterPath) && IsPathChainValid(currentChapterPath, selectedPathsSet))
+                            if (isCurrentParagraphApproved)
                             {
                                 sb.AppendLine("  <table>");
                                 foreach (var row in table.Descendants<TableRow>())
@@ -160,9 +158,10 @@ public class ContextBuilderWord : ContextBuilderBase
                         }
                     }
 
-                    if (!string.IsNullOrEmpty(currentChapterPath) && IsPathChainValid(currentChapterPath, selectedPathsSet))
+                    // Закрываем самую последнюю главу романа перед выходом из файла
+                    if (isCurrentParagraphApproved && !string.IsNullOrEmpty(activeElementId))
                     {
-                        sb.AppendLine("</heading>");
+                        sb.AppendLine($"</heading id=\"{activeElementId}\">");
                     }
                 }
             }
@@ -173,9 +172,9 @@ public class ContextBuilderWord : ContextBuilderBase
         }, token);
     }
 
-    /// <summary>
-    /// Шаблонная реализация генерации издательского PDF из локального Word-файла.
-    /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПОЛНОЦЕННЫЙ НАЛИВ СТРОК В ИЗДАТЕЛЬСКИЙ PDF ДЛЯ WORD   -->
+    // ================================================================= -->
     public override async Task GeneratePdfAsync(string outputPath, string fileName, List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries, CancellationToken token)
     {
         var sb = await BuildTextContentAsync(checkedFiles, savedEntries, token);
@@ -189,13 +188,26 @@ public class ContextBuilderWord : ContextBuilderBase
         var currentSection = document.AddSection();
         SetSectionMargins(currentSection);
 
-        // Вспомогательный вызов рендерера строк из базового абстрактного класса
+        // Построчно читаем буфер романа и наливаем параграфы MigraDoc
+        using (var reader = new StringReader(metaDataText))
+        {
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
+            {
+                token.ThrowIfCancellationRequested();
+                var p = currentSection.AddParagraph();
+                p.AddFormattedText(line);
+
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    p.Format.SpaceBefore = MigraDoc.DocumentObjectModel.Unit.FromPoint(4);
+                }
+            }
+        }
+
         SavePdfToDiskAndOpen(document, outputPath, fileName);
     }
 
-    /// <summary>
-    /// Контракт на будущую сборку DocX.
-    /// </summary>
     public override Task GenerateDocxAsync(string outputPath, string fileName, List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries, CancellationToken token)
     {
         return Task.CompletedTask;

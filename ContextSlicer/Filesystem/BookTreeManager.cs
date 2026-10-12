@@ -1,4 +1,5 @@
-﻿using System;
+﻿using ContextSlicer.ContextBuilder;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -145,6 +146,9 @@ public class BookTreeManager : BaseTreeManager
         buildingMap[entry.EntryPath] = newNode;
     }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ПЕРЕНАПРАВЛЕНИЕ ПОДСЧЕТА НА НАШ НОВЫЙ ООП-СБОРЩИК GOOGLE -->
+    // ================================================================= -->
     public override async Task<long> CalculateSelectedCharactersAsync(bool includeDirectoryStructure, CancellationToken token)
     {
         var activeEntries = GetSelectedEntries();
@@ -153,10 +157,14 @@ public class BookTreeManager : BaseTreeManager
             return 0;
         }
 
-        string fullText = await GoogleDocBuilder.BuildContextTextAsync(
-            activeEntries, _cacheFilePath, includeDirectoryStructure, false, token
-        );
+        // Вместо сломанного старого GoogleDocBuilder вызываем наш вылизанный ContextBuilderGoogle!
+        // Он идеально знает структуру Tabs API и соберет честный вес прозы в памяти.
+        var googleBuilder = new ContextBuilderGoogle(string.Empty, string.Empty, includeDirectoryStructure, false);
 
-        return fullText?.Length ?? 0;
+        var dummyCheckedFiles = new List<FileSystemNode> { this.RootNode };
+        var sb = await googleBuilder.BuildTextContentAsync(dummyCheckedFiles, activeEntries, token);
+
+        return sb?.Length ?? 0;
     }
+
 }

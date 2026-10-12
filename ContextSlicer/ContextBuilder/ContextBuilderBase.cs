@@ -179,4 +179,26 @@ public abstract class ContextBuilderBase
             System.Windows.MessageBox.Show($"{errTemplate} {ex.Message}", errTitle, System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
     }
+    // ================================================================= -->
+    // ДОБАВЛЕНО: АВТОНОМНЫЙ ПОЛИМОРФНЫЙ ПОДСЧЕТ ВЕСА ДЛЯ ИНТЕРФЕЙСА    -->
+    // ================================================================= -->
+    /// <summary>
+    /// Виртуальный метод подсчета веса контекста. Сборщики сами собирают текст 
+    /// и отдают наружу только чистые цифры, полностью разгружая ViewModel!
+    /// </summary>
+    public virtual async Task<(int Characters, int Tokens)> CalculateSizeAsync(
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        CancellationToken token)
+    {
+        // Базовая реализация генерирует текст штатными средствами наследника
+        var sb = await BuildTextContentAsync(checkedFiles, savedEntries, token);
+        string text = sb.ToString();
+
+        int chars = text.Length;
+        int tokens = (int)Math.Ceiling(chars / 4.0); // Единый базовый ИИ-коэффициент
+
+        return (chars, tokens);
+    }
+
 } // Финальное закрытие абстрактного класса ContextBuilderBase!

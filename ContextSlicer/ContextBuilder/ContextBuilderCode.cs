@@ -18,6 +18,9 @@ public class ContextBuilderCode : ContextBuilderBase
     public ContextBuilderCode(string promptRules, string moduleRules, bool includeDirectoryStructure)
         : base(promptRules, moduleRules, includeDirectoryStructure, false) { }
 
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: СТРОГАЯ СЕЛЕКЦИЯ ФИЗИЧЕСКИХ ФАЙЛОВ ДЛЯ ВЫГРУЗКИ КОДА   -->
+    // ================================================================= -->
     public override async Task<StringBuilder> BuildTextContentAsync(
         List<FileSystemNode> checkedFiles,
         List<SyntaxEntry> savedEntries,
@@ -26,17 +29,19 @@ public class ContextBuilderCode : ContextBuilderBase
         var sb = new StringBuilder();
         if (checkedFiles == null || checkedFiles.Count == 0) return sb;
 
-        // 1. Выгрузка системных правил промпта и модуля из абстрактного класса
+        // Выгрузка системных правил промпта из абстрактной базы
         AppendSystemRules(sb);
 
-        // 2. Генерация структуры выбранного кода (оглавления) строго без дубликатов
+        // Генерация оглавления структуры выбранного кода
         if (IncludeDirectoryStructure)
         {
             sb.AppendLine("=== СТРУКТУРА ВЫБРАННОГО КОДА ===");
             var uniquePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var file in checkedFiles)
             {
-                if (file != null && !string.IsNullOrEmpty(file.RelativePath) && uniquePaths.Add(file.RelativePath))
+                // В оглавление пускаем строго физические файлы диска!
+                if (file != null && file.IsFile && !file.IsSyntaxNode &&
+                    !string.IsNullOrEmpty(file.RelativePath) && uniquePaths.Add(file.RelativePath))
                 {
                     sb.AppendLine($"├─ {file.RelativePath}");
                 }
@@ -44,18 +49,23 @@ public class ContextBuilderCode : ContextBuilderBase
             sb.AppendLine();
         }
 
-        // 3. Выгрузка содержимого файлов исходного кода
+        // Выгрузка содержимого файлов исходного кода
         for (int i = 0; i < checkedFiles.Count; i++)
         {
             token.ThrowIfCancellationRequested();
             var fileNode = checkedFiles[i];
-            if (fileNode == null || !File.Exists(fileNode.FullPath)) continue;
 
-            // БРОНЕБОЙНЫЙ ПЕРЕХВАТ: Ищем, выбраны ли конкретные методы (FUNC, PROP, SECT) внутри ноды этого файла.
+            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Верхний цикл обязан обрабатывать СТРОГО физические файлы!
+            // Если в список прилетела дочерняя Roslyn-нода метода — мы её просто пропускаем,
+            // так как её код будет хирургически извлечен при обработке родительского файла!
+            if (fileNode == null || fileNode.IsSyntaxNode || !fileNode.IsFile || !File.Exists(fileNode.FullPath))
+                continue;
+
+            // Собираем выбранные чекбоксы методов строго изнутри текущего файла
             var selectedMethods = new List<FileSystemNode>();
             CollectCheckedLeavesOnly(fileNode, selectedMethods);
 
-            // Если файл отмечен галочкой True (выбран целиком) ИЛИ внутри него не выбрано ни одной точечной функции
+            // Если файл выбран полностью (галочка True) ИЛИ внутри него нет точечных поднод
             bool isFullFileMode = (fileNode.IsChecked == true) || (selectedMethods.Count == 0);
 
             sb.AppendLine($"---{fileNode.RelativePath}---");
@@ -63,12 +73,12 @@ public class ContextBuilderCode : ContextBuilderBase
 
             if (isFullFileMode)
             {
-                // Наливаем файл целиком, если точечные функции не выбраны
+                // Наливаем файл целиком без купюр
                 sb.AppendLine(fullCodeText);
             }
             else
             {
-                // ХИРУРГИЧЕСКИЙ РЕЖИМ НАБЛЮДЕНИЯ: Вырезаем только usings и выбранные функции по SpanInfo!
+                // Хирургический режим: вырезаем только usings и отмеченные функции
                 ExtractTargetCodeBlocks(sb, fileNode, selectedMethods, fullCodeText);
             }
             sb.AppendLine();
@@ -76,6 +86,7 @@ public class ContextBuilderCode : ContextBuilderBase
 
         return sb;
     }
+
     /// <summary>
     /// Точечно вырезает блоки импортов и выбранные функции по координатам Roslyn.
     /// </summary>
@@ -112,27 +123,44 @@ public class ContextBuilderCode : ContextBuilderBase
             {
                 sb.AppendLine($"// [ВЫРЕЗАННЫЙ БЛОК: {methodNode.Name}]");
                 sb.AppendLine(fullCodeText.Substring(span.Start, span.Length));
+
+                // Добавляем строгий закрывающий маркер-декоратор для валидации контекста ИИ
+                sb.AppendLine($"// [КОНЕЦ БЛОКА: {methodNode.Name}]");
                 sb.AppendLine();
             }
         }
     }
 
     /// <summary>
-    /// Рекурсивно собирает только конечные выбранные функции (листья) внутри ноды файла.
+    /// ТВОЙ АЛГОРИТМ (ГЛУБОКИЙ СКАН): Бескомпромиссно обходит всю иерархическую матрешку нод Roslyn 
+    /// (Файл -> Namespace -> Class -> Method) и собирает конечные листья, у которых IsChecked == true.
     /// </summary>
     private void CollectCheckedLeavesOnly(FileSystemNode node, List<FileSystemNode> result)
     {
         if (node == null || result == null) return;
 
+        // Если это синтаксический узел, он выбран, и это конкретный исполняемый элемент
         if (node.IsSyntaxNode && node.IsChecked == true &&
             (node.SyntaxType == EntryType.Function || node.SyntaxType == EntryType.Property || node.SyntaxType == EntryType.Section))
         {
-            if (!node.Name.Contains("using")) result.Add(node);
+            // Пропускаем usings, так как они автоматически вырезаются в начале ExtractTargetCodeBlocks
+            if (!node.Name.Contains("using"))
+            {
+                result.Add(node);
+            }
         }
 
-        foreach (var child in node.Children)
+        // Бежим вглубь по коллекции детей (пробиваем пространства имен, вложенные классы и структуры)
+        if (node.Children != null && node.Children.Count > 0)
         {
-            CollectCheckedLeavesOnly(child, result);
+            for (int i = 0; i < node.Children.Count; i++)
+            {
+                var child = node.Children[i];
+                if (child != null && child.Name != "LoadingStub...")
+                {
+                    CollectCheckedLeavesOnly(child, result);
+                }
+            }
         }
     }
 
@@ -162,7 +190,6 @@ public class ContextBuilderCode : ContextBuilderBase
 
         var document = new MigraDoc.DocumentObjectModel.Document();
 
-        // Создаем технический моноширинный стиль для кода во избежание сбоев верстки
         var codeStyle = document.Styles.AddStyle("CodeStyle", "Normal");
         if (codeStyle != null)
         {
@@ -199,6 +226,7 @@ public class ContextBuilderCode : ContextBuilderBase
 
     public override Task GenerateDocxAsync(string outputPath, string fileName, List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries, CancellationToken token)
     {
-        return Task.CompletedTask; // Задел под будущую выгрузку структуры кода в docx
+        return Task.CompletedTask;
     }
+      
 } // Финальное закрытие класса!

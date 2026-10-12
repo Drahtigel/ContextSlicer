@@ -35,16 +35,13 @@ public abstract class BaseTreeManager : IProjectTreeManager
     }
 
     // ================================================================= -->
-    // ЦЕНТРАЛИЗОВАННЫЙ СУПЕР-КАЛЬКУЛЯТОР СВЕРХУ ВНИЗ И СНИЗУ ВВЕРХ      -->
-    // ================================================================= -->
-
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ЖЕСТКАЯ ПУБЛИКАЦИЯ СИГНАЛОВ ДЛЯ СИНХРОНИЗАЦИИ WPF UI  -->
+    // ИСПРАВЛЕНО: ПЕРЕВОД МЕТОДОВ TRI-STATE В ВИРТУАЛЬНЫЙ СТАТУС       -->
     // ================================================================= -->
     /// <summary>
-    /// Пробивает статус true/false вниз и принудительно уведомляет биндинги WPF!
+    /// Пробивает статус true/false вниз по каскаду детей. 
+    /// Помечен как virtual для специфического переопределения в проектах кода!
     /// </summary>
-    public void RecalculateChildrenCascade(FileSystemNode parentNode, bool targetState)
+    public virtual void RecalculateChildrenCascade(FileSystemNode parentNode, bool targetState)
     {
         if (parentNode == null || parentNode.Children == null) return;
 
@@ -52,21 +49,18 @@ public abstract class BaseTreeManager : IProjectTreeManager
         {
             if (child == null || child.Name == "LoadingStub...") continue;
 
-            // Жестко выставляем внутренний флаг
             child.IsChecked = targetState;
-
-            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Принудительно пинаем UI-уведомления для каждого ребенка!
             child.NotifyComputedStateChanged();
 
-            // Рекурсивно шагаем до самого низа структуры
             RecalculateChildrenCascade(child, targetState);
         }
     }
 
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: МАТЕМАТИЧЕСКИ СТРОГИЙ КАЛЬКУЛЯТОР БАЛАНСА РОДИТЕЛЕЙ   -->
-    // ================================================================= -->
-    public void RecalculateParentsBalance(FileSystemNode? parentNode)
+    /// <summary>
+    /// Агрегирует баланс родительских веток снизу вверх.
+    /// Помечен как virtual для изоляции технического Roslyn-пересчета!
+    /// </summary>
+    public virtual void RecalculateParentsBalance(FileSystemNode? parentNode)
     {
         if (parentNode == null || parentNode.Children == null || parentNode.Children.Count == 0) return;
 
@@ -74,15 +68,11 @@ public abstract class BaseTreeManager : IProjectTreeManager
         bool hasUnchecked = false;
         bool hasIndeterminate = false;
 
-        // Обходим только прямых детей текущего узла
         for (int i = 0; i < parentNode.Children.Count; i++)
         {
             var child = parentNode.Children[i];
-
-            // Пропускаем заглушку ленивой загрузки, она не участвует в балансе веса
             if (child == null || child.Name == "LoadingStub...") continue;
 
-            // Опрашиваем живое вычисленное состояние ребенка
             bool? childState = child.IsChecked;
 
             if (childState == true) hasChecked = true;
@@ -91,29 +81,25 @@ public abstract class BaseTreeManager : IProjectTreeManager
         }
 
         bool? newParentState;
-
-        // Строгий логический конъюнкт Tri-State структуры
         if (hasIndeterminate || (hasChecked && hasUnchecked))
-            newParentState = null; // Каша или квадратик у детей -> папка горит квадратиком
+            newParentState = null;
         else if (hasChecked && !hasUnchecked)
-            newParentState = true; // Все дети выбраны -> папка горит галочкой
+            newParentState = true;
         else
-            newParentState = false; // Все дети пустые -> папка гаснет
+            newParentState = false;
 
         if (parentNode.IsChecked != newParentState)
         {
             parentNode.IsChecked = newParentState;
-
-            // Принудительно заставляем WPF мгновенно перерисовать этот родительский узел
             parentNode.NotifyComputedStateChanged();
         }
 
-        // Рекурсивно поднимаем волну пересчета по вертикали власти до самого верха репозитория
         if (parentNode.Parent != null)
         {
             RecalculateParentsBalance(parentNode.Parent);
         }
     }
+
 
 
     /// <summary>
@@ -138,7 +124,7 @@ public abstract class BaseTreeManager : IProjectTreeManager
     /// Единый шаблонный метод накатки сохраненных состояний Tri-State из JSON-конфига модуля.
     /// Гарантирует абсолютно одинаковое поведение чекбоксов для кода, книг и документов Word!
     /// </summary>
-    protected void RestoreCheckedStatesFromConfig(FileSystemNode localRoot)
+    protected virtual void RestoreCheckedStatesFromConfig(FileSystemNode localRoot)
     {
         // Очищаем и заново строим глобальную карту нод текущего менеджера
         UniqueMap.Clear();
