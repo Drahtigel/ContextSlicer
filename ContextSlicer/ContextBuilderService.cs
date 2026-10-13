@@ -1,7 +1,8 @@
-﻿using ContextSlicer.Filesystem;
-using ContextSlicer.ContextBuilder;
+﻿using ContextSlicer.ContextBuilder;
+using ContextSlicer.Filesystem;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -139,6 +140,61 @@ public static class ContextBuilderService
         // Создаем нужный билдер налету и просим его посчитать вес самостоятельно!
         var builder = CreateBuilder(projectType, string.Empty, string.Empty, includeDirectoryStructure, false);
         return await builder.CalculateSizeAsync(checkedFiles, savedEntries, token);
+    }
+    // ================================================================= -->
+    // ДОБАВЛЕНО: СЕРВИСНЫЙ ДИСПЕТЧЕР ДЛЯ ПОДДЕРЖКИ ГЕНЕРАЦИИ EXPORT .DOCX -->
+    // ================================================================= -->
+    /// <summary>
+    /// Централизованный статический метод генерации контекста в формате MS Word (.docx).
+    /// Инициализирует нужный фабричный билдер и запускает OpenXML экспорт.
+    /// </summary>
+    public static async Task GenerateDocxContextFileAsync(
+        string outputPath,
+        string fileName,
+        string promptRules,
+        string moduleRules,
+        bool includeDirectoryStructure,
+        FileSystemNode rootNode,
+        List<SyntaxEntry> savedEntries,
+        IProgress<ProgressReport> progress,
+        ProjectType projectType,
+        CancellationToken token)
+    {
+        // 1. Вытаскиваем плоский список отмеченных пользователем на UI файлов диска
+        var checkedFiles = new List<FileSystemNode>();
+        GetCheckedFilesExtended(rootNode, checkedFiles);
+
+        // Гарантируем проброс корня дерева для литературных документов прозы
+        if ((projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc) && rootNode != null)
+        {
+            if (!checkedFiles.Contains(rootNode)) checkedFiles.Add(rootNode);
+        }
+
+        // 2. Создаем нужный билдер через фабрику стратегий
+        var builder = CreateBuilder(projectType, promptRules, moduleRules, includeDirectoryStructure, false);
+        if (builder == null) return;
+
+        // 3. Запускаем асинхронную генерацию .docx документа силами выбранного класса
+        await builder.GenerateDocxAsync(outputPath, fileName, checkedFiles, savedEntries, token);
+
+        // 4. Одиночный автоматический запуск Проводника Windows для подсветки готового файла
+        try
+        {
+            string fullPath = Path.Combine(outputPath, fileName);
+            if (File.Exists(fullPath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{fullPath}\"",
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Explorer Open DOCX Error] {ex.Message}");
+        }
     }
 
 }

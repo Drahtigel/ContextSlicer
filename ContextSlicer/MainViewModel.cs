@@ -21,7 +21,15 @@ using System.Windows;
 using System.Windows.Media;
 
 namespace ContextSlicer;
-
+// ================================================================= -->
+// ДОБАВЛЕНО: СИСТЕМА ВЫХОДНЫХ ФОРМАТОВ ДЛЯ ПОДДЕРЖКИ EXPORT .DOCX   -->
+// ================================================================= -->
+public enum OutputFileFormat
+{
+    Txt,
+    Pdf,
+    Docx
+}
 public partial class MainViewModel : ObservableObject
 {
     private IProjectTreeManager? _activeTreeManager;
@@ -30,8 +38,59 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<ProjectConfig> _projects = new();
     [ObservableProperty] private ProjectConfig? _selectedProject;
     [ObservableProperty] private bool _isAutoSaveEnabled;
+    // Текущий активный формат выгрузки контекста
+    [ObservableProperty] private OutputFileFormat _selectedOutputFormat = OutputFileFormat.Pdf;
     // Список модулей выбранного проекта
-    [ObservableProperty] private bool _isPdfFormat; // Если true — рендерим в PDF, если false — в TXT
+    /// <summary>
+    /// Свойство-мост для обратной совместимости со старыми XAML-привязками PDF радиокнопки.
+    /// </summary>
+    public bool IsPdfFormat
+    {
+        get => SelectedOutputFormat == OutputFileFormat.Pdf;
+        set
+        {
+            if (value && SelectedOutputFormat != OutputFileFormat.Pdf)
+            {
+                SelectedOutputFormat = OutputFileFormat.Pdf;
+                OnPropertyChanged(nameof(IsPdfFormat));
+                OnPropertyChanged(nameof(IsTxtFormat));
+                OnPropertyChanged(nameof(IsDocxFormat));
+            }
+        }
+    }
+    // Новые свойства для прямой привязки радиокнопок TXT и DOCX в интерфейсе XAML
+    public bool IsTxtFormat
+    {
+        get => SelectedOutputFormat == OutputFileFormat.Txt;
+        set
+        {
+            if (value && SelectedOutputFormat != OutputFileFormat.Txt)
+            {
+                SelectedOutputFormat = OutputFileFormat.Txt;
+                OnPropertyChanged(nameof(IsPdfFormat));
+                OnPropertyChanged(nameof(IsTxtFormat));
+                OnPropertyChanged(nameof(IsDocxFormat));
+            }
+        }
+    }
+    public bool IsDocxFormat
+    {
+        get => SelectedOutputFormat == OutputFileFormat.Docx;
+        set
+        {
+            if (value && SelectedOutputFormat != OutputFileFormat.Docx)
+            {
+                SelectedOutputFormat = OutputFileFormat.Docx;
+                OnPropertyChanged(nameof(IsPdfFormat));
+                OnPropertyChanged(nameof(IsTxtFormat));
+                OnPropertyChanged(nameof(IsDocxFormat));
+            }
+        }
+    }
+    // Автоматический пересчет токенов при переключении выходного формата файлов
+    partial void OnSelectedOutputFormatChanged(OutputFileFormat value) => _ = RecalculateContextSizeAsync();
+
+    //[ObservableProperty] private bool _isPdfFormat; // Если true — рендерим в PDF, если false — в TXT
     [ObservableProperty] private bool _isProjectBlockExpanded;
     [ObservableProperty] private bool _isProjectNameInvalid;
     [ObservableProperty] private bool _isModuleNameInvalid;
@@ -1556,20 +1615,24 @@ public partial class MainViewModel : ObservableObject
         _cts?.Cancel();
         ProgressText = "Отмена операции...";
     }
-   
+
     // ИСПРАВЛЕНО: Привязываем команду к методу проверки прав на выполнение
     [RelayCommand(CanExecute = nameof(CanGenerateContext))]
     private async Task GenerateContext()
     {
         if (SelectedModule == null || RootNode == null) return;
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: УНИВЕРСАЛЬНАЯ ВАЛИДАЦИЯ ВЫБОРА ДЛЯ КОДА И ПРОЗЫ       -->
-        // ================================================================= -->
-        // 1. Считываем все галочки с экрана прямо в модель модуля перед сборкой
         SyncTreeWithModule();
-        string extension = IsPdfFormat ? ".pdf" : ".txt";
-        string safeFileName = GetSafeFileName(ModuleNameInput) + extension;
+
+        // ИСПРАВЛЕНО: Вычисляем расширение на основе нового перечисления форматов!
+        string extension = SelectedOutputFormat switch
+        {
+            OutputFileFormat.Pdf => ".pdf",
+            OutputFileFormat.Docx => ".docx",
+            _ => ".txt"
+        };
+
+        string safeFileName = GetSafeFileName(SelectedModule.ModuleName) + extension;
 
         if (string.IsNullOrWhiteSpace(OutputPath) || string.IsNullOrWhiteSpace(ModuleNameInput))
         {
@@ -1583,18 +1646,15 @@ public partial class MainViewModel : ObservableObject
 
         if (isLiterary)
         {
-            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Для книг и Word проверяем наличие точечных глав в конфиге модуля!
             hasSelection = SelectedModule?.CheckedEntries != null && SelectedModule.CheckedEntries.Count > 0;
         }
         else
         {
-            // Для технического кода C#/SQL оставляем классический сбор плоских файлов с диска
             var checkedFiles = new List<FileSystemNode>();
             ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFiles);
             hasSelection = checkedFiles.Count > 0;
         }
 
-        // Если в зависимости от типа проекта ничего не найдено — выводим локализованное окно
         if (!hasSelection)
         {
             string noSelectionMsg = Application.Current.Resources["Str_Err_Update_ReadDir"] as string
@@ -1605,20 +1665,14 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        // Вычисляем массив checkedFiles для передачи в прогресс-бар (только для кода, для книг создаем пустышку)
         var checkedFilesForProgress = new List<FileSystemNode>();
         if (!isLiterary) ContextBuilderService.GetCheckedFilesExtended(RootNode, checkedFilesForProgress);
         else checkedFilesForProgress.Add(RootNode ?? new FileSystemNode());
 
-        // ================================================================= -->
-        // ИСПРАВЛЕНО: ЛОКАЛИЗАЦИЯ ШАБЛОНА ПОДГОТОВКИ ПРОГРЕСС-БАРА          -->
-        // ================================================================= -->
-        // Взводим флаги оверлея прогресс-бара
         IsProcessing = true;
         ProgressValue = 0;
         ProgressMax = checkedFilesForProgress.Count;
 
-        // ИСПРАВЛЕНО: Вытаскиваем мультиязычный шаблон строки и безопасно форматируем его живой цифрой!
         string preparingTemplate = Application.Current.Resources["Str_Update_PreparingElements"] as string
                                    ?? "Подготовка к обработке {0} элементов...";
 
@@ -1637,45 +1691,29 @@ public partial class MainViewModel : ObservableObject
         try
         {
             string fullPath = Path.Combine(OutputPath, safeFileName);
-            if (IsPdfFormat)
+
+            // МАРШРУТИЗАЦИЯ ВЫХОДНЫХ СБОРЩИКОВ КОНТЕКСТА
+            if (SelectedOutputFormat == OutputFileFormat.Pdf)
             {
-
-                // ================================================================= -->
-                // ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ АРГУМЕНТОВ С РОДНЫМИ СВОЙСТВАМИ VIEWMODEL -->
-                // ================================================================= -->
-                // Вызываем расширенную версию метода, соблюдая строгую последовательность параметров из ContextBuilderService
                 await ContextBuilderService.GeneratePdfContextFileAsync(
-                    OutputPath,
-                    safeFileName,
-                    PromptRules,
-                    ModuleRules,
-                    IncludeDirectoryStructure,
-                    IncludeImages,
-                    RootNode ?? new FileSystemNode(), // <--- ЗАЩИТА ТУТ
-                    SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(), // <--- И ТУТ
-                    progressHandler,
-                    SelectedProject?.Type ?? ProjectType.Folder,
-                    _cts.Token);                     // 11. Токен отмены операции
-
-
+                    OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, IncludeImages,
+                    RootNode ?? new FileSystemNode(), SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
+                    progressHandler, SelectedProject?.Type ?? ProjectType.Folder, _cts.Token);
             }
-            // ================================================================= -->
-            // ИСПРАВЛЕНО: УДАЛЕНИЕ ДУБЛИРОВАНИЯ СТАРТА PROCESS И ЛОКАЛИЗАЦИЯ CATCH -->
-            // ================================================================= -->
+            else if (SelectedOutputFormat == OutputFileFormat.Docx)
+            {
+                // ДОБАВЛЕНО: Вызов будущего сервисного метода генерации DOCX файлов!
+                await ContextBuilderService.GenerateDocxContextFileAsync(
+                    OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure,
+                    RootNode ?? new FileSystemNode(), SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
+                    progressHandler, SelectedProject?.Type ?? ProjectType.Folder, _cts.Token);
+            }
             else
             {
-                // Сервис GenerateContextFileAsync сам создаст файл, запишет StringBuilder и откроет Проводник ОДИН раз!
                 await ContextBuilderService.GenerateContextFileAsync(
-                    OutputPath,
-                    safeFileName,
-                    PromptRules,
-                    ModuleRules,
-                    IncludeDirectoryStructure,
-                    RootNode ?? new FileSystemNode(),
-                    SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
-                    progressHandler,
-                    SelectedProject?.Type ?? ProjectType.Folder,
-                    _cts.Token);
+                    OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure,
+                    RootNode ?? new FileSystemNode(), SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
+                    progressHandler, SelectedProject?.Type ?? ProjectType.Folder, _cts.Token);
             }
         }
         catch (OperationCanceledException)
@@ -1701,6 +1739,7 @@ public partial class MainViewModel : ObservableObject
             _cts = null;
         }
     }
+
 
     // Новый обязательный метод проверки для CanExecute
     private bool CanGenerateContext()

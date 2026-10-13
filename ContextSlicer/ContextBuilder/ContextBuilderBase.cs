@@ -74,13 +74,7 @@ public abstract class ContextBuilderBase
         List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries,
         CancellationToken token);
 
-    /// <summary>
-    /// Упреждающий задел на будущее: контракт на обратную сборку структурированного .docx файла.
-    /// </summary>
-    public abstract Task GenerateDocxAsync(
-        string outputPath, string fileName,
-        List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries,
-        CancellationToken token);
+
     /// <summary>
     /// Выгружает заголовки системных промптов и правил модуля в итоговый буфер.
     /// </summary>
@@ -199,6 +193,19 @@ public abstract class ContextBuilderBase
         int tokens = (int)Math.Ceiling(chars / 4.0); // Единый базовый ИИ-коэффициент
 
         return (chars, tokens);
+    }
+    /// <summary>
+    /// Абстрактный контракт на генерацию файла контекста в формате MS Word.
+    /// Помечен как virtual для специфического переопределения во всех трех сборщиках!
+    /// </summary>
+    public virtual Task GenerateDocxAsync(
+        string outputPath,
+        string fileName,
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        CancellationToken token)
+    {
+        return Task.CompletedTask;
     }
 
 } // Финальное закрытие абстрактного класса ContextBuilderBase!

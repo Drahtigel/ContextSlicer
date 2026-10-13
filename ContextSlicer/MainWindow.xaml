@@ -649,17 +649,22 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Переключатели формата итогового файла -->
+                <!-- ИСПРАВЛЕНО: ПАНЕЛЬ ПЕРЕКЛЮЧАТЕЛЕЙ С ПОДДЕРЖКОЙ ТРЁХ ВЫХОДНЫХ ФОРМАТОВ (TXT, PDF, DOCX) -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
-                    <!-- Для радиокнопки PDF -->
-                    <!-- Для радиокнопки PDF -->
+                    <!-- Радиокнопка PDF -->
                     <RadioButton Content="PDF"
-             GroupName="FileFormatGroup"
-             IsChecked="{Binding IsPdfFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                 GroupName="FileFormatGroup"
+                 IsChecked="{Binding IsPdfFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
-                    <!-- Для радиокнопки TXT (убрали биндинг, чтобы не ломать XAML) -->
+                    <!-- Радиокнопка TXT (Привязана к честному свойству IsTxtFormat) -->
                     <RadioButton Content="TXT"
-             GroupName="FileFormatGroup"/>
+                 GroupName="FileFormatGroup"
+                 IsChecked="{Binding IsTxtFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
+                    <!-- ДОБАВЛЕНО: Радиокнопка для сохранения контекста в формат MS Word (.docx) -->
+                    <RadioButton Content="DOCX"
+                 GroupName="FileFormatGroup"
+                 IsChecked="{Binding IsDocxFormat, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                 </StackPanel>
 
                 <!-- Кнопка вызова фильтров масок-исключений (Переведена на ресурсы) -->

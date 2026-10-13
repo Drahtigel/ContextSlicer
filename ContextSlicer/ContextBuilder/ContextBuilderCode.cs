@@ -224,9 +224,85 @@ public class ContextBuilderCode : ContextBuilderBase
         SavePdfToDiskAndOpen(document, outputPath, fileName);
     }
 
-    public override Task GenerateDocxAsync(string outputPath, string fileName, List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries, CancellationToken token)
+    // ================================================================= -->
+    // OVERRIDE: ТЕХНИЧЕСКИЙ ВЫСОКОПРОИЗВОДИТЕЛЬНЫЙ DOCX ДЛЯ КОДА C#    -->
+    // ================================================================= -->
+    /// <summary>
+    /// Переопределенный метод генерации контекста в формате MS Word для проектов исходного кода.
+    /// Сохраняет моноширинные шрифты, отступы табуляции и хирургическую разметку блоков.
+    /// </summary>
+    public override async Task GenerateDocxAsync(
+        string outputPath,
+        string fileName,
+        List<FileSystemNode> checkedFiles,
+        List<SyntaxEntry> savedEntries,
+        CancellationToken token)
     {
-        return Task.CompletedTask;
+        // 1. Извлекаем хирургически нарезанный листинг исходного кода по SpanInfo Roslyn
+        var sb = await BuildTextContentAsync(checkedFiles, savedEntries, token);
+        string metaDataText = sb.ToString();
+
+        if (string.IsNullOrWhiteSpace(metaDataText)) return;
+
+        string fullOutputPath = Path.Combine(outputPath, fileName);
+
+        // 2. Асинхронно компилируем валидный xml-пакет OpenXML Word на диске
+        await Task.Run(() =>
+        {
+            try
+            {
+                using (var wordDoc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Create(
+                    fullOutputPath, DocumentFormat.OpenXml.WordprocessingDocumentType.Document))
+                {
+                    var mainPart = wordDoc.AddMainDocumentPart();
+                    mainPart.Document = new DocumentFormat.OpenXml.Wordprocessing.Document();
+                    var body = mainPart.Document.AppendChild(new DocumentFormat.OpenXml.Wordprocessing.Body());
+
+                    using (var reader = new StringReader(metaDataText))
+                    {
+                        string? line;
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            token.ThrowIfCancellationRequested();
+
+                            // Заменяем символы табуляции на 4 фиксированных пробела для сохранения структуры отступов
+                            string cleanLine = line.Replace("\t", "    ");
+
+                            var para = new DocumentFormat.OpenXml.Wordprocessing.Paragraph();
+                            var run = new DocumentFormat.OpenXml.Wordprocessing.Run();
+                            var runProps = new DocumentFormat.OpenXml.Wordprocessing.RunProperties();
+
+                            // УСТАНОВКА МОНОШИРИННОГО ШРИФТА ДЛЯ ЛИСТИНГА КОДА
+                            // Courier New гарантирует идеальное выравнивание и читаемость управляющих конструкций
+                            var runFont = new DocumentFormat.OpenXml.Wordprocessing.RunFonts { Ascii = "Courier New", HighAnsi = "Courier New" };
+                            var fontSize = new DocumentFormat.OpenXml.Wordprocessing.FontSize { Val = "18" }; // 9pt в формате OpenXML (половинки пунктов)
+
+                            runProps.AppendChild(runFont);
+                            runProps.AppendChild(fontSize);
+
+                            // Подсвечиваем заголовки файлов и маркеры хирургических разрезов ИИ жирным начертанием
+                            if (cleanLine.Trim().StartsWith("// [") || cleanLine.Trim().StartsWith("---") || cleanLine.Trim().StartsWith("==="))
+                            {
+                                runProps.AppendChild(new DocumentFormat.OpenXml.Wordprocessing.Bold());
+                            }
+
+                            run.AppendChild(runProps);
+                            run.AppendChild(new DocumentFormat.OpenXml.Wordprocessing.Text(cleanLine));
+                            para.AppendChild(run);
+                            body.AppendChild(para);
+                        }
+                    }
+
+                    mainPart.Document.Save();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Code Docx Export Error] {ex.Message}");
+                if (File.Exists(fullOutputPath)) try { File.Delete(fullOutputPath); } catch { }
+                throw;
+            }
+        }, token);
     }
-      
+
 } // Финальное закрытие класса!

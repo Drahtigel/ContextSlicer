@@ -45,6 +45,9 @@ public class GoogleDownloader
     /// <summary>
     /// Выполняет скачивание структуры документа и всех вложенных бинарных потоков изображений
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: АТОМАРНАЯ ДЕКОМПОЗИЦИЯ КОНВЕЙЕРА СКАЧИВАНИЯ ИЗОБРАЖЕНИЙ -->
+    // ================================================================= -->
     public async Task<bool> DownloadToCacheAsync(string url, string projectLocation, string authJsonPath)
     {
         string docId = ExtractDocumentId(url);
@@ -58,18 +61,15 @@ public class GoogleDownloader
 
         try
         {
-            // 1. Читаем параметры из JSON-файла сервисного аккаунта
             string credentialsText = await File.ReadAllTextAsync(authJsonPath);
             var creds = JObject.Parse(credentialsText);
             string clientEmail = creds["client_email"]?.ToString() ?? string.Empty;
             string privateKeyRaw = creds["private_key"]?.ToString() ?? string.Empty;
             if (string.IsNullOrEmpty(clientEmail) || string.IsNullOrEmpty(privateKeyRaw)) return false;
 
-            // 2. ПОЛУЧАЕМ ACCESS TOKEN ЧЕРЕЗ JWT
             string accessToken = await GetGoogleAccessTokenAsync(clientEmail, privateKeyRaw);
             if (string.IsNullOrEmpty(accessToken)) return false;
 
-            // 3. СКАЧИВАЕМ СТРУКТУРУ ДОКУМЕНТА (Разбиваем URL во избежание зажёвывания фильтром)
             string docApiUrl = "https" + ":" + "//" + "docs" + "." + "googleapis" + "." + "com" + "/" + "v1" + "/" + "documents" + "/" + docId + "?includeTabsContent=true";
             var request = new HttpRequestMessage(HttpMethod.Get, docApiUrl);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -86,47 +86,16 @@ public class GoogleDownloader
             var docStructure = JObject.Parse(jsonResponse);
             if (docStructure["documentId"] == null) return false;
 
-            // 4. ИЗВЛЕКАЕМ ВСЕ ИЗОБРАЖЕНИЯ ИЗ ИЕРАРХИИ ДОКУМЕНТА В КОЛЛЕКЦИЮ
             var imageMap = ExtractInlineObjects(docStructure);
 
-            // 5. ПОСЛЕДОВАТЕЛЬНО СКАЧИВАЕМ КАЖДЫЙ БИНАРНЫЙ ФАЙЛ НА ДИСК
+            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Вырезаем старый зажёванный блок if и делегируем 
+            // всю задачу новой выделенной статической подпрограмме DownloadImageMapToDisk!
             if (imageMap.Count > 0)
             {
                 string imagesDir = Path.Combine(cacheDir, "images", docId);
-                if (!Directory.Exists(imagesDir)) Directory.CreateDirectory(imagesDir);
-
-                foreach (var imgPair in imageMap)
-                {
-                    string objectId = imgPair.Key;
-                    string contentUri = imgPair.Value;
-
-                    try
-                    {
-                        var imgRequest = new HttpRequestMessage(HttpMethod.Get, contentUri);
-                        imgRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-                        var imgResponse = await _httpClient.SendAsync(imgRequest);
-                        if (imgResponse.IsSuccessStatusCode)
-                        {
-                            byte[] imageBytes = await imgResponse.Content.ReadAsByteArrayAsync();
-
-                            // Вызываем нашу новую изолированную функцию определения формата
-                            string ext = DetectImageExtension(imageBytes);
-
-                            // Сохраняем файл на диск под его честным расширением (.jpg для Беатрис!)
-                            string imgFullPath = Path.Combine(imagesDir, $"{objectId}{ext}");
-                            await File.WriteAllBytesAsync(imgFullPath, imageBytes);
-                        }
-
-                    }
-                    catch (Exception imgEx)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[Скачивание Сбой] {objectId}: {imgEx.Message}");
-                    }
-                }
+                await DownloadImageMapToDiskAsync(imageMap, imagesDir, accessToken);
             }
 
-            // Сохраняем структуру JSON и обновляем время жизни кэша
             await File.WriteAllTextAsync(cacheFilePath, jsonResponse);
             await File.WriteAllTextAsync(metaFilePath, DateTime.Now.ToString("o"));
             return true;
@@ -137,6 +106,48 @@ public class GoogleDownloader
             return false;
         }
     }
+
+    /// <summary>
+    /// ВЫДЕЛЕННАЯ ИЗОЛИРОВАННАЯ ПОДПРОГРАММА: Скачивает бинарные потоки изображений 
+    /// напрямую на диск, нативно определяя расширение по магическим числам байт.
+    /// </summary>
+    public static async Task DownloadImageMapToDiskAsync(Dictionary<string, string> imageMap, string targetImagesDir, string accessToken)
+    {
+        if (imageMap == null || imageMap.Count == 0 || string.IsNullOrEmpty(targetImagesDir)) return;
+
+        if (!Directory.Exists(targetImagesDir)) Directory.CreateDirectory(targetImagesDir);
+
+        foreach (var imgPair in imageMap)
+        {
+            string objectId = imgPair.Key;
+            string contentUri = imgPair.Value;
+
+            if (string.IsNullOrEmpty(objectId) || string.IsNullOrEmpty(contentUri)) continue;
+
+            try
+            {
+                var imgRequest = new HttpRequestMessage(HttpMethod.Get, contentUri);
+                imgRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+                var imgResponse = await _httpClient.SendAsync(imgRequest);
+                if (imgResponse.IsSuccessStatusCode)
+                {
+                    byte[] imageBytes = await imgResponse.Content.ReadAsByteArrayAsync();
+
+                    // Честно пробиваем формат файла по его реальному заголовку
+                    string ext = DetectImageExtension(imageBytes);
+
+                    string imgFullPath = Path.Combine(targetImagesDir, $"{objectId}{ext}");
+                    await File.WriteAllBytesAsync(imgFullPath, imageBytes);
+                }
+            }
+            catch (Exception imgEx)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Точечное Скачивание Сбой] {objectId}: {imgEx.Message}");
+            }
+        }
+    }
+
     // ================================================================= -->
     // ИСПРАВЛЕНО: ИЗОЛИРОВАННЫЙ СИГНАТУРНЫЙ АНАЛИЗАТОР ФОРМАТА ФАЙЛА    -->
     // ================================================================= -->
