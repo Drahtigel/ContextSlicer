@@ -1,10 +1,11 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using ContextSlicer.Filesystem;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using ContextSlicer.Filesystem;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace ContextSlicer.ContextBuilder;
 
@@ -126,6 +127,9 @@ public class GoogleDocumentTree : BaseDocumentTree
     /// <summary>
     /// Главный диспетчер обхода элементов: линейно перенаправляет параграфы и таблицы в профильные методы.
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: СТЕРИЛЬНЫЙ КОНВЕЙЕР РАЗБОРА СТРУКТУРЫ И ПРОЗЫ GOOGLE  -->
+    // ================================================================= -->
     private void ParseParagraphsToTree(JArray contentArray, DocEntry parentTab, List<SyntaxEntry> savedEntries, string tabPath)
     {
         var activeChain = new List<DocEntry> { parentTab };
@@ -142,17 +146,10 @@ public class GoogleDocumentTree : BaseDocumentTree
 
             if (element["paragraph"] is JObject paragraph)
             {
-                // Сначала вытаскиваем и инжектируем картинки, если они есть
-                ProcessCodeInlineImages(paragraph, currentActiveTarget);
-
-                // Затем обрабатываем текст, заголовки и списки
-                // ================================================================= -->
-                // ИСПРАВЛЕНО CS1615: УДАЛЕН ЛИШНИЙ МОДИФИКАТОР REF ПРИ ВЫЗОВЕ МЕТОДА-->
-                // ================================================================= -->
-                // Затем обрабатываем текст, заголовки и списки
+                // ИСПРАВЛЕНО: Полностью удален вызов дублирующего метода ProcessCodeInlineImages!
+                // Текст и картинки теперь обрабатываются СТРОГО в один проход внутри ProcessCodeParagraph.
                 currentActiveTarget = ProcessCodeParagraph(paragraph, savedEntries, tabPath,
                     activeChain, activePaths, currentActiveTarget, ref isInListMode, ref currentListId);
-
             }
             else if (element["table"] != null && currentActiveTarget != null)
             {
@@ -161,46 +158,6 @@ public class GoogleDocumentTree : BaseDocumentTree
         }
     }
 
-    /// <summary>
-    /// ИЗОЛИРОВАННАЯ ФУНКЦИЯ 1: Автономный перехват и добавление картинок как узлов DOM-дерева.
-    /// </summary>
-    private void ProcessCodeInlineImages(JObject paragraph, DocEntry? currentActiveTarget)
-    {
-        if (!IncludeImages || currentActiveTarget == null || paragraph["elements"] is not JArray elements) return;
-
-        int imageIndex = -1;
-        foreach (var el in elements)
-        {
-            if (el?["inlineObjectElement"]?["inlineObjectId"] is not JToken imgToken) continue;
-
-            string imgId = imgToken.ToString();
-            if (string.IsNullOrEmpty(imgId)) continue;
-
-            imageIndex++;
-            string altName = currentActiveTarget.EntryTitle;
-            if (imageIndex > 0) altName = $"{altName} [{imageIndex}]";
-
-            string googleCacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache");
-            string rawImagePath = Path.Combine(googleCacheDir, imgId);
-
-            string convertedJpgPath = NormalizeAndConvertImage(rawImagePath, googleCacheDir, imgId);
-
-            if (!string.IsNullOrEmpty(convertedJpgPath) && File.Exists(convertedJpgPath))
-            {
-                var imgEntry = new DocEntry
-                {
-                    EntryTitle = altName,
-                    EntryContent = $"<image src=\"{imgId}.jpg\" alt=\"{altName}\" />",
-                    Type = DocEntryType.Paragraph,
-                    HeadingLevel = currentActiveTarget.HeadingLevel + 1
-                };
-                currentActiveTarget.ChildEntries.Add(imgEntry);
-            }
-        }
-    }
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: СНАЙПЕРСКИЙ НАЛИВ КАРТИНОК ИЗ ИЕРАРХИЧЕСКОЙ ПАПКИ ИДОМ -->
-    // ================================================================= -->
     private DocEntry? ProcessCodeParagraph(JObject paragraph, List<SyntaxEntry> savedEntries, string tabPath,
         List<DocEntry> activeChain, Dictionary<int, string> activePaths, DocEntry? currentActiveTarget,
         ref bool isInListMode, ref string currentListId)
@@ -208,7 +165,8 @@ public class GoogleDocumentTree : BaseDocumentTree
         string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
         var textBuilder = new StringBuilder();
 
-        if (paragraph["elements"] is JArray elements)
+        var elements = paragraph["elements"] as JArray;
+        if (elements != null)
         {
             int imageIndex = -1;
             foreach (var el in elements)
@@ -219,9 +177,6 @@ public class GoogleDocumentTree : BaseDocumentTree
                 {
                     textBuilder.Append(textToken.ToString());
                 }
-                // ================================================================= -->
-                // ИСПРАВЛЕНО: АСИНХРОННЫЙ ВЫЗОВ ЭКСТРАКТОРА ВНУТРИ ЦИКЛА ОБХОДА     -->
-                // ================================================================= -->
                 else if (IncludeImages && el["inlineObjectElement"]?["inlineObjectId"] is JToken imgToken)
                 {
                     string imgId = imgToken.ToString();
@@ -231,24 +186,43 @@ public class GoogleDocumentTree : BaseDocumentTree
                         string altName = currentActiveTarget != null ? currentActiveTarget.EntryTitle : "Изображение";
                         if (imageIndex > 0) altName = $"{altName} [{imageIndex}]";
 
-                        // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Не угадываем пути, а требуем от экстрактора 
-                        // гарантированно достать файл с сервера прямо сейчас! Метод CalculateSizeAsync / BuildTextContentAsync 
-                        // теперь работают через Task, поэтому мы можем использовать .GetAwaiter().GetResult() внутри синхронного ProcessCodeParagraph
-                        string convertedJpgPath = ExtractImageToCacheAsync(imgId).GetAwaiter().GetResult();
+                        string imagesDir = GetImagesDirectory();
+                        string rawDownloadedPath = string.Empty;
 
-                        if (!string.IsNullOrEmpty(convertedJpgPath) && File.Exists(convertedJpgPath))
+                        if (Directory.Exists(imagesDir))
                         {
-                            textBuilder.Append($"{Environment.NewLine}{Environment.NewLine}<image src=\"{Path.GetFileName(convertedJpgPath)}\" alt=\"{altName}\" />{Environment.NewLine}");
+                            // ================================================================= -->
+                            // ИСПРАВЛЕНО: ТОЧНЫЙ ОТСЕВ МАРКЕРНЫХ КОПИЙ БЕЗ БЛОКИРОВКИ ИСХОДНЫХ JPG-->
+                            // ================================================================= -->
+                            // Нативно и мгновенно ищем скачанный файл по системной маске objectId.*
+                            var matchedFiles = Directory.GetFiles(imagesDir, $"{imgId}.*");
+
+                            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Отсекаем СТРОГО те файлы, которые уже содержат 
+                            // маркер "_converted". Это позволит исходным файлам .jpg Беатрис беспрепятственно 
+                            // проходить на глубокую конверсию и sRGB реанимацию!
+                            rawDownloadedPath = matchedFiles.FirstOrDefault(f => !f.Contains("_converted", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+
                         }
+
+                        if (!string.IsNullOrEmpty(rawDownloadedPath) && File.Exists(rawDownloadedPath))
+                        {
+                            string convertedJpgPath = ExtractImageToCache(imgId);
+                            if (!string.IsNullOrEmpty(convertedJpgPath))
+                            {
+                                // Вшиваем в тег имя файла с суффиксом конверсии
+                                textBuilder.Append($"{Environment.NewLine}<image src=\"{imgId}_converted.jpg\" alt=\"{altName}\" />{Environment.NewLine}");
+                            }
+                        }
+
                     }
                 }
-
             }
         }
 
         string pText = textBuilder.ToString();
         string headingTitle = pText.Trim();
 
+        // Очищаем cleanHeadingName от тегов картинок для точного текстового маппинга папок структуры
         string cleanHeadingName = headingTitle;
         if (cleanHeadingName.Contains("<image"))
         {
@@ -263,6 +237,7 @@ public class GoogleDocumentTree : BaseDocumentTree
         bool isVirtualFolderMatch = !string.IsNullOrEmpty(cleanHeadingName) &&
                                     savedEntries.Any(e => e.EntryPath.EndsWith(cleanHeadingName, StringComparison.OrdinalIgnoreCase));
 
+        // А) ВЕТКА СТРУКТУРНЫХ ЗАГОЛОВКОВ И ПАПОК
         if (isHeadingStyle || isTitleOrSubtitle || isVirtualFolderMatch)
         {
             if (isInListMode && currentActiveTarget != null)
@@ -294,10 +269,11 @@ public class GoogleDocumentTree : BaseDocumentTree
 
                 var headingEntry = new DocEntry { EntryTitle = cleanHeadingName, EntryPath = match.EntryPath, Type = localType, HeadingLevel = targetLevel };
 
+                // Если картинка была вшита в сам заголовок папки — нативно прописываем её тег в контент создаваемой ноды
                 if (pText.Contains("<image"))
                 {
                     int imgIdx = pText.IndexOf("<image");
-                    headingEntry.EntryContent = pText.Substring(imgIdx);
+                    headingEntry.EntryContent = pText.Substring(imgIdx).Trim();
                 }
 
                 savedEntries.Remove(match);
@@ -313,6 +289,7 @@ public class GoogleDocumentTree : BaseDocumentTree
             activePaths[targetLevel] = fullHeadingPath;
             return currentActiveTarget;
         }
+        // Б) ВЕТКА МАРКИРОВАННЫХ СПИСКОВ
         else if (currentActiveTarget != null && paragraph["bullet"] is JToken bulletToken)
         {
             string itemText = pText.Trim();
@@ -329,10 +306,13 @@ public class GoogleDocumentTree : BaseDocumentTree
             }
             currentActiveTarget.EntryContent += $"{Environment.NewLine}  <li level=\"{nestingLevel}\">{itemText}</li>";
         }
+        // В) ВЕТКА ОБЫЧНОГО ХУДОЖЕСТВЕННОГО ТЕКСТА
+        // ИСПРАВЛЕНО: Если этот параграф уже обработан выше как заголовок папки структуры — 
+        // пропускаем его дублирование в блок обычного прозаического контента!
         else if (currentActiveTarget != null && !string.IsNullOrWhiteSpace(pText))
         {
             if (isInListMode) { currentActiveTarget.EntryContent += $"{Environment.NewLine}</ul id=\"{currentListId}\">{Environment.NewLine}"; isInListMode = false; }
-            currentActiveTarget.EntryContent += $"{Environment.NewLine}{pText}";
+            currentActiveTarget.EntryContent += $"{Environment.NewLine}{pText.Trim()}";
         }
 
         return currentActiveTarget;
@@ -392,18 +372,16 @@ public class GoogleDocumentTree : BaseDocumentTree
         }
         currentActiveTarget.EntryContent += $"{Environment.NewLine}  </table>";
     }
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ЧЕСТНЫЙ ИЕРАРХИЧЕСКИЙ ЭКСТРАКТОР КАРТИНОК ИЗ ОБЛАКА    -->
-    // ================================================================= -->
-    public override async Task<string> ExtractImageToCacheAsync(string objectId)
+    
+    public override string ExtractImageToCache(string objectId)
     {
         if (string.IsNullOrEmpty(objectId)) return string.Empty;
 
-        // Папка кэша картинок согласно твоему даунлоадеру: googlecache\images\{docId}
+        // Целевой путь: googlecache\images\{docId}
         string imagesDir = GetImagesDirectory();
-        string finalJpgPath = Path.Combine(imagesDir, $"{objectId}.jpg");
+        // ИСПРАВЛЕНО: Ищем файл строго с суффиксом конверсии
+        string finalJpgPath = Path.Combine(imagesDir, $"{objectId}_converted.jpg");
 
-        // 1. Быстрый фолбэк: Если файл уже нормализован в JPEG ранее — мгновенно отдаем его
         if (File.Exists(finalJpgPath)) return finalJpgPath;
 
         try
@@ -412,48 +390,20 @@ public class GoogleDocumentTree : BaseDocumentTree
 
             if (Directory.Exists(imagesDir))
             {
-                // Нативно и быстро ищем скачанный файл на диске по маске objectId.*
+                // ================================================================= -->
+                // ИСПРАВЛЕНО: ТОЧНЫЙ ОТСЕВ МАРКЕРНЫХ КОПИЙ БЕЗ БЛОКИРОВКИ ИСХОДНЫХ JPG-->
+                // ================================================================= -->
+                // Нативно и мгновенно ищем скачанный файл по системной маске objectId.*
                 var matchedFiles = Directory.GetFiles(imagesDir, $"{objectId}.*");
-                rawDownloadedPath = matchedFiles.FirstOrDefault(f => !f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+
+                // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Отсекаем СТРОГО те файлы, которые уже содержат 
+                // маркер "_converted". Это позволит исходным файлам .jpg Беатрис беспрепятственно 
+                // проходить на глубокую конверсию и sRGB реанимацию!
+                rawDownloadedPath = matchedFiles.FirstOrDefault(f => !f.Contains("_converted", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+
             }
 
-            // 2. ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Если файла на диске нет, докачиваем его силами 
-            // твоего оригинального GoogleDownloader, используя честный маппинг ключей из MainViewModel!
-            if (string.IsNullOrEmpty(rawDownloadedPath))
-            {
-                if (System.Windows.Application.Current.MainWindow?.DataContext is MainViewModel vm && vm.SelectedProject != null)
-                {
-                    string fullProjectUrl = vm.SelectedProject.RootPath; // Честный URL документа Google Docs
-
-                    // Вытаскиваем Email сервисного аккаунта напрямую из конфигурации выбранного проекта
-                    string serviceAccountEmail = vm.SelectedProject.GoogleApiKey;
-                    if (string.IsNullOrWhiteSpace(serviceAccountEmail))
-                    {
-                        serviceAccountEmail = Properties.Settings.Default.DefaultServiceAccountEmail;
-                    }
-
-                    // ИСПРАВЛЕНО: Переводим Email в честный физический путь к JSON-файлу на диске через твой метод!
-                    string keyPath = vm.GetKeyPathByEmail(serviceAccountEmail);
-
-                    if (!string.IsNullOrEmpty(fullProjectUrl) && File.Exists(keyPath))
-                    {
-                        var downloader = new Google.GoogleDownloader();
-
-                        // Вызываем ОРИГИНАЛЬНЫЙ метод скачивания пакета картинок целиком.
-                        // Он сам внутри себя выполнит JWT-авторизацию по keyPath, скачает файлы и наполнит папку!
-                        await downloader.DownloadToCacheAsync(fullProjectUrl, this.CacheDirectory, keyPath);
-                    }
-                }
-
-                // Повторно проверяем папку по маске после работы штатного загрузчика
-                if (Directory.Exists(imagesDir))
-                {
-                    var matchedFiles = Directory.GetFiles(imagesDir, $"{objectId}.*");
-                    rawDownloadedPath = matchedFiles.FirstOrDefault(f => !f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
-                }
-            }
-
-            // 3. Если исходный скачанный файл обнаружен — копируем/нормализуем его в Baseline JPEG
+            // 2. Если исходный скачанный файл обнаружен — копируем/нормализуем его в Baseline JPEG
             if (!string.IsNullOrEmpty(rawDownloadedPath) && File.Exists(rawDownloadedPath))
             {
                 return NormalizeAndConvertImage(rawDownloadedPath, imagesDir, objectId);
@@ -461,7 +411,7 @@ public class GoogleDocumentTree : BaseDocumentTree
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[Google DOM Safe Extraction Error] {objectId}: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[Google DOM Extraction Error] {objectId}: {ex.Message}");
         }
 
         return string.Empty;

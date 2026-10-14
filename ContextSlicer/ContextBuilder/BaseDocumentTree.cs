@@ -84,17 +84,19 @@ public abstract class BaseDocumentTree
         CacheDirectory = cacheDirectory;
         DocumentId = documentId;
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ТОЧНЫЙ КАНWeight ПУТЬ К ИЗОБРАЖЕНИЯМ ВНУТРИ GOOGLECACHE -->
+    // ================================================================= -->
     public string GetImagesDirectory()
     {
-        if (string.IsNullOrEmpty(CacheDirectory) || string.IsNullOrEmpty(DocumentId))
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache", "images", "unknown");
+        // ИСПРАВЛЕНО: Картинки всегда лежат по строгому пути: googlecache\images\{DocumentId}
+        string baseCacheDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "googlecache");
+        string imagesDir = Path.Combine(baseCacheDir, "images", DocumentId);
 
-        // Формируем путь согласно старому работающему стандарту: googlecache\images\{id}\
-        string imagesDir = Path.Combine(CacheDirectory, "images", DocumentId);
         if (!Directory.Exists(imagesDir)) Directory.CreateDirectory(imagesDir);
-
         return imagesDir;
     }
+
     /// <summary>
     /// Абстрактный метод для классов-наследников (Google/Word) для наполнения дерева.
     /// </summary>
@@ -194,41 +196,96 @@ public abstract class BaseDocumentTree
     }
 
     // ================================================================= -->
-    // ДОБАВЛЕНО: СНАЙПЕРСКИЙ АВТОНОМНЫЙ КОНВЕРТЕР И ОПРЕДЕЛИТЕЛЬ IMAGE   -->
+    // ИСПРАВЛЕНО: ТРЕХЭТАПНЫЙ НЕУЯЗВИМЫЙ КАСКАД КОНВЕРСИИ КАРТИНОК С GDI+ -->
     // ================================================================= -->
-    /// <summary>
-    /// Считывает заголовок файла (магические байты), определяет реальный формат 
-    /// и принудительно конвертирует изображение в JPEG для 100% совместимости с PDF/Word!
-    /// </summary>
-    // ================================================================= -->
-    // ИСПРАВЛЕНО: ЖЕЛЕЗОБЕТОННЫЙ ПРЯМОЙ НАЛИВ И КВИТИРОВАНИЕ ФАЙЛОВ JPG -->
-    // ================================================================= -->
-    /// <summary>
-    /// Обеспечивает 100% физическое присутствие картинки в целевой папке под именем objectId.jpg
-    /// </summary>
-    protected static string NormalizeAndConvertImage(string rawCacheImagePath, string outputDir, string objectId)
+    public static string NormalizeAndConvertImage(string rawCacheImagePath, string outputDir, string objectId)
     {
         if (string.IsNullOrEmpty(rawCacheImagePath) || !File.Exists(rawCacheImagePath)) return string.Empty;
+        //kix.kcbc4ihbg7ia
+        string finalJpgName = $"{objectId}_converted.jpg";
+        string targetPath = Path.Combine(outputDir, finalJpgName);
 
+        if (Path.GetFileName(rawCacheImagePath).Equals(finalJpgName, StringComparison.OrdinalIgnoreCase))
+        {
+            return rawCacheImagePath;
+        }
+
+        // ЭТАП 1: Попытка каноничной конвертации через BitmapDecoder (WPF)
         try
         {
-            string targetPath = Path.Combine(outputDir, $"{objectId}.jpg");
-
-            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Вместо капризных фоновых BitmapDecoder-ов, 
-            // мы принудительно копируем существующий сырой файл кэша в целевую папку 
-            // под легитимным расширением .jpg! Это гарантирует 100% наполнение папки 
-            // и исключает любые тихие падения в фоновых потоках.
-            File.Copy(rawCacheImagePath, targetPath, true);
-
-            // Проверяем физическое присутствие на диске перед возвратом
-            if (File.Exists(targetPath))
+            using (var stream = new FileStream(rawCacheImagePath, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
+                var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                    stream, System.Windows.Media.Imaging.BitmapCreateOptions.None, System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+
+                if (decoder != null && decoder.Frames.Count > 0)
+                {
+                    var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 85 };
+                    encoder.Frames.Add(decoder.Frames[0]);
+                    using (var os = new FileStream(targetPath, FileMode.Create, FileAccess.Write)) { encoder.Save(os); }
+
+                    if (File.Exists(targetPath) && new FileInfo(targetPath).Length > 0) return targetPath;
+                }
+            }
+        }
+        catch { }
+
+        // ЭТАП 2: Аварийный попиксельный sRGB фолбэк через BitmapImage (WPF)
+        try
+        {
+            var bitmapImage = new System.Windows.Media.Imaging.BitmapImage();
+            using (var stream = new FileStream(rawCacheImagePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                bitmapImage.BeginInit();
+                bitmapImage.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bitmapImage.StreamSource = stream;
+                bitmapImage.EndInit();
+            }
+
+            var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder { QualityLevel = 85 };
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmapImage));
+            using (var os = new FileStream(targetPath, FileMode.Create, FileAccess.Write)) { encoder.Save(os); }
+
+            if (File.Exists(targetPath) && new FileInfo(targetPath).Length > 0) return targetPath;
+        }
+        catch { }
+
+        // ================================================================= -->
+        // ЭТАП 3: ТЯЖЕЛАЯ АРТИЛЛЕРИЯ (GDI+) — СПАСЕНИЕ ПРОБЛЕМНЫХ JPEG/CMYK -->
+        // ================================================================= -->
+        // Если WPF Imaging не справился с файлом Беатрис — System.Drawing принудительно 
+        // вычитает растр gdi-декодером ОС Windows и аппаратно пережмет его в sRGB!
+        try
+        {
+            // Используем рефлексию или прямое обращение, если System.Drawing.Common подключен в проект
+            using (var gdiImage = System.Drawing.Image.FromFile(rawCacheImagePath))
+            {
+                using (var bitmap = new System.Drawing.Bitmap(gdiImage.Width, gdiImage.Height))
+                {
+                    using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+                    {
+                        graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+                        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+
+                        // Перерисовываем картинку на чистый sRGB холст
+                        graphics.DrawImage(gdiImage, 0, 0, gdiImage.Width, gdiImage.Height);
+                    }
+
+                    // Сохраняем в канонический формат кодека JPEG
+                    bitmap.Save(targetPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                }
+            }
+
+            if (File.Exists(targetPath) && new FileInfo(targetPath).Length > 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"[GDI+ Триумф]: Проблемная картинка Беатрис {objectId} успешно перерисована в sRGB JPEG!");
                 return targetPath;
             }
         }
-        catch (Exception ex)
+        catch (Exception criticalEx)
         {
-            System.Diagnostics.Debug.WriteLine($"[Image Физическое Копирование Сбой]: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[КРИТИЧЕСКИЙ СБОЙ ГРАФИКИ]: Не удалось распаковать файл {objectId}: {criticalEx.Message}");
         }
 
         return string.Empty;
@@ -238,5 +295,5 @@ public abstract class BaseDocumentTree
     /// Извлекает (скачивает из облака или распаковывает из архива) бинарный поток 
     /// конкретного изображения и возвращает абсолютный путь к физическому файлу кэша.
     /// </summary>
-    public abstract Task<string> ExtractImageToCacheAsync(string objectId);
+    public abstract string ExtractImageToCache(string objectId);
 }

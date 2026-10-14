@@ -25,6 +25,24 @@ public abstract class ContextBuilderBase
         IncludeDirectoryStructure = includeDirectoryStructure;
         IncludeImages = includeImages;
     }
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ЧИСТАЯ ФИЛЬТРАЦИЯ ТЕГОВ КАРТИНОК ИЗ ТЕКСТОВОГО КОНТЕКСТА-->
+    // ================================================================= -->
+    /// <summary>
+    /// Метод постобработки текстового буфера. Если в дочернем классе не переопределено,
+    /// полностью вычищает технические теги изображений для сохранения чистоты ИИ-контекста.
+    /// </summary>
+    protected string CleanTextFromImageTags(string rawText)
+    {
+        if (string.IsNullOrEmpty(rawText)) return string.Empty;
+
+        // Регулярное выражение находит любые инлайновые XML-теги картинок вида <image ... />
+        return System.Text.RegularExpressions.Regex.Replace(
+            rawText,
+            @"<image\s+[^>]*/>",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
 
     /// <summary>
     /// Абстрактный метод извлечения текстового контента, уникальный для каждого типа проекта.
@@ -38,6 +56,9 @@ public abstract class ContextBuilderBase
     /// Унифицированный шаблонный метод генерации финального TXT-контекста на диск.
     /// Железно одинаков для кода, Word и Google Docs!
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ФИЛЬТРАЦИЯ МАРКЕРОВ ИЗОБРАЖЕНИЙ ПЕРЕД ЗАПИСЬЮ В TXT    -->
+    // ================================================================= -->
     public virtual async Task GenerateTxtAsync(
         string outputPath, string fileName,
         List<FileSystemNode> checkedFiles, List<SyntaxEntry> savedEntries,
@@ -45,11 +66,13 @@ public abstract class ContextBuilderBase
     {
         if (string.IsNullOrWhiteSpace(outputPath) || string.IsNullOrWhiteSpace(fileName)) return;
 
-        // Вызываем перегруженный метод наследника для формирования буфера
         var sb = await BuildTextContentAsync(checkedFiles, savedEntries, token);
 
-        // ТВОЕ ЖЕСТКОЕ ПРАВИЛО: Валидация буфера на пустоту перед записью
-        if (sb == null || sb.Length == 0 || string.IsNullOrWhiteSpace(sb.ToString().Replace("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===", "").Trim()))
+        // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Текстовый сборщик должен в принципе убирать этот тег!
+        // Пропускаем буфер через CleanTextFromImageTags, полностью очищая контекст ИИ от тегов картинок
+        string finalCleanText = CleanTextFromImageTags(sb?.ToString() ?? string.Empty);
+
+        if (string.IsNullOrWhiteSpace(finalCleanText) || string.IsNullOrWhiteSpace(finalCleanText.Replace("=== ПРАВИЛА ОБРАЩЕНИЯ С ТЕКСТОМ И КОДОМ ===", "").Trim()))
         {
             throw new InvalidOperationException("Сгенерированный текстовый контекст пуст! Проверьте выбор элементов.");
         }
@@ -57,9 +80,8 @@ public abstract class ContextBuilderBase
         string extension = fileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ? "" : ".txt";
         string fullOutputPath = Path.Combine(outputPath, fileName + extension);
 
-        await File.WriteAllTextAsync(fullOutputPath, sb.ToString(), Encoding.UTF8, token);
+        await File.WriteAllTextAsync(fullOutputPath, finalCleanText, Encoding.UTF8, token);
 
-        // Системная подсветка файла в Проводнике Windows (строго один раз!)
         if (File.Exists(fullOutputPath))
         {
             System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{fullOutputPath}\"");

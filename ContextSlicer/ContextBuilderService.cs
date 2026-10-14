@@ -20,7 +20,7 @@ public struct ProgressReport
 
 /// <summary>
 /// Легковесная Фабрика-Диспетчер. Полностью сохраняет обратную совместимость с ViewModel,
-/// но делегирует сборку и генерацию контекстов специализированным ООП-стратегиям.
+/// но делегирует сборку и генерацию контекстов public static async Task GenerateContextFileAsync( специализированным ООП-стратегиям.
 /// </summary>
 public static class ContextBuilderService
 {
@@ -148,36 +148,60 @@ public static class ContextBuilderService
     /// Централизованный статический метод генерации контекста в формате MS Word (.docx).
     /// Инициализирует нужный фабричный билдер и запускает OpenXML экспорт.
     /// </summary>
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: СКВОЗНОЙ ПРОБРОС RUNTIME-ФЛАГА ИЗОБРАЖЕНИЙ ДЛЯ ТЕКСТА И WORD -->
+    // ================================================================= -->
+    public static async Task GenerateContextFileAsync(
+        string outputPath, string fileName, string projectRules, string moduleRules,
+        bool includeDirectoryStructure, bool includeImages, // <-- ДОБАВЛЕН ФЛАГ
+        FileSystemNode rootNode, List<SyntaxEntry> savedEntries,
+        IProgress<ProgressReport> progress, ProjectType projectType, CancellationToken token)
+    {
+        var checkedFiles = new List<FileSystemNode>();
+        GetCheckedFilesExtended(rootNode, checkedFiles);
+
+        bool isLiterary = projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc;
+        if (isLiterary && rootNode != null && !checkedFiles.Contains(rootNode))
+        {
+            checkedFiles.Add(rootNode);
+        }
+
+        // ИСПРАВЛЕНО: Передаем реальный includeImages вместо жесткого false
+        var builder = CreateBuilder(projectType, projectRules, moduleRules, includeDirectoryStructure, includeImages);
+        await builder.GenerateTxtAsync(outputPath, fileName, checkedFiles, savedEntries, token);
+    }
+
+    /// <summary>
+    /// Централизованный статический метод генерации контекста в формате MS Word (.docx).
+    /// Инициализирует нужный фабричный билдер и запускает OpenXML экспорт с поддержкой картинок!
+    /// </summary>
     public static async Task GenerateDocxContextFileAsync(
         string outputPath,
         string fileName,
         string promptRules,
         string moduleRules,
         bool includeDirectoryStructure,
+        bool includeImages, // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Добавлен флаг в аргументы метода!
         FileSystemNode rootNode,
         List<SyntaxEntry> savedEntries,
         IProgress<ProgressReport> progress,
         ProjectType projectType,
         CancellationToken token)
     {
-        // 1. Вытаскиваем плоский список отмеченных пользователем на UI файлов диска
         var checkedFiles = new List<FileSystemNode>();
         GetCheckedFilesExtended(rootNode, checkedFiles);
 
-        // Гарантируем проброс корня дерева для литературных документов прозы
         if ((projectType == ProjectType.GoogleDoc || projectType == ProjectType.WordDoc) && rootNode != null)
         {
             if (!checkedFiles.Contains(rootNode)) checkedFiles.Add(rootNode);
         }
 
-        // 2. Создаем нужный билдер через фабрику стратегий
-        var builder = CreateBuilder(projectType, promptRules, moduleRules, includeDirectoryStructure, false);
+        // ИСПРАВЛЕНО: Передаем реальный includeImages со страницы интерфейса в фабрику стратегий!
+        var builder = CreateBuilder(projectType, promptRules, moduleRules, includeDirectoryStructure, includeImages);
         if (builder == null) return;
 
-        // 3. Запускаем асинхронную генерацию .docx документа силами выбранного класса
         await builder.GenerateDocxAsync(outputPath, fileName, checkedFiles, savedEntries, token);
 
-        // 4. Одиночный автоматический запуск Проводника Windows для подсветки готового файла
         try
         {
             string fullPath = Path.Combine(outputPath, fileName);
@@ -196,5 +220,6 @@ public static class ContextBuilderService
             Debug.WriteLine($"[Explorer Open DOCX Error] {ex.Message}");
         }
     }
+
 
 }

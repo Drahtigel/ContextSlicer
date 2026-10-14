@@ -243,7 +243,14 @@ public class WordDocumentTree : BaseDocumentTree
     /// Извлекает бинарный поток изображения напрямую из ZIP-пакета .docx файла
     /// и нормализует его в Baseline JPEG для 100% совместимости с PDF.
     /// </summary>
-    public override async Task<string> ExtractImageToCacheAsync(string objectId)
+    // ================================================================= -->
+    // ИСПРАВЛЕНО CS0115 И CS0534: СИНХРОННЫЙ ZIP-ЭКСТРАКТОР ДЛЯ WORD   -->
+    // ================================================================= -->
+    /// <summary>
+    /// Извлекает бинарный поток изображения напрямую из ZIP-пакета .docx файла
+    /// по системной маске поиска без возникновения блокировок потоков (Deadlock).
+    /// </summary>
+    public override string ExtractImageToCache(string objectId)
     {
         if (string.IsNullOrEmpty(objectId)) return string.Empty;
 
@@ -254,47 +261,40 @@ public class WordDocumentTree : BaseDocumentTree
         // Если картинка уже была успешно извлечена и перешита в JPEG ранее — мгновенно возвращаем её!
         if (File.Exists(finalJpgPath)) return finalJpgPath;
 
-        // Для извлечения нам нужен физический путь к исходному файлу .docx.
-        // Так как мы сохранили его в virtualRootTab.EntryPath, мы можем надежно вытащить его из корня:
+        // Извлекаем физический путь к исходному файлу .docx из корня дерева
         string? docxPath = this.ChildEntries.FirstOrDefault()?.EntryPath;
         if (string.IsNullOrEmpty(docxPath) || !File.Exists(docxPath)) return string.Empty;
 
         try
         {
-            // Асинхронно открываем .docx файл как стандартный ZIP-архив
-            await Task.Run(() =>
+            // Открываем .docx файл как стандартный ZIP-архив строго в синхронном потоке
+            using (var archive = System.IO.Compression.ZipFile.OpenRead(docxPath))
             {
-                using (var archive = System.IO.Compression.ZipFile.OpenRead(docxPath))
+                // В OpenXML внутренние картинки всегда именуются по маске: word/media/image1.png и т.д.
+                var entry = archive.Entries.FirstOrDefault(e =>
+                    e.FullName.Equals($"word/media/{objectId}", StringComparison.OrdinalIgnoreCase) ||
+                    e.FullName.Equals($"word/media/{objectId}.png", StringComparison.OrdinalIgnoreCase) ||
+                    e.FullName.Equals($"word/media/{objectId}.jpeg", StringComparison.OrdinalIgnoreCase) ||
+                    e.FullName.Equals($"word/media/{objectId}.jpg", StringComparison.OrdinalIgnoreCase));
+
+                if (entry != null)
                 {
-                    // В OpenXML внутренние картинки всегда именуются по маске: word/media/image1.png и т.д.
-                    // Переменная objectId как раз содержит имя файла, например "image1.png" или "image1"
-                    var entry = archive.Entries.FirstOrDefault(e =>
-                        e.FullName.Equals($"word/media/{objectId}", StringComparison.OrdinalIgnoreCase) ||
-                        e.FullName.Equals($"word/media/{objectId}.png", StringComparison.OrdinalIgnoreCase) ||
-                        e.FullName.Equals($"word/media/{objectId}.jpeg", StringComparison.OrdinalIgnoreCase) ||
-                        e.FullName.Equals($"word/media/{objectId}.jpg", StringComparison.OrdinalIgnoreCase));
+                    string origExt = Path.GetExtension(entry.FullName);
+                    string rawTmpPath = Path.Combine(imagesDir, $"{objectId}_tmp{origExt}");
 
-                    if (entry != null)
+                    // Физически выгружаем бинарный поток на диск во временный файл
+                    entry.ExtractToFile(rawTmpPath, true);
+
+                    if (File.Exists(rawTmpPath))
                     {
-                        // Извлекаем оригинальное расширение файла из архива
-                        string origExt = Path.GetExtension(entry.FullName);
-                        string rawTmpPath = Path.Combine(imagesDir, $"{objectId}_tmp{origExt}");
+                        // Вызываем наш базовый конвертер: копируем и фиксируем в чистый Baseline JPEG!
+                        NormalizeAndConvertImage(rawTmpPath, imagesDir, objectId);
 
-                        // Физически выгружаем бинарный поток на диск во временный файл
-                        entry.ExtractToFile(rawTmpPath, true);
-
-                        if (File.Exists(rawTmpPath))
-                        {
-                            // Вызываем наш базовый конвертер: определяем формат по магическим байтам
-                            // сигнатуры и намертво пересохраняем в чистый Baseline JPEG!
-                            NormalizeAndConvertImage(rawTmpPath, imagesDir, objectId);
-
-                            // Безжалостно зачищаем временный оригинальный файл с диска
-                            try { File.Delete(rawTmpPath); } catch { }
-                        }
+                        // Безжалостно зачищаем временный оригинальный файл с диска
+                        try { File.Delete(rawTmpPath); } catch { }
                     }
                 }
-            });
+            }
 
             // Если наш конвертер успешно создал файл — возвращаем абсолютный путь к нему
             if (File.Exists(finalJpgPath))
@@ -309,5 +309,6 @@ public class WordDocumentTree : BaseDocumentTree
 
         return string.Empty;
     }
+
 
 }

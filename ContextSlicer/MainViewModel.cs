@@ -1263,23 +1263,35 @@ public partial class MainViewModel : ObservableObject
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                 string targetDir = Path.Combine(appData, "ContextSlicer", "projects");
 
-                // 1. ОЧИСТКА ГЛОБАЛЬНОГО КЭША GOOGLE DOCS (ЕСЛИ ЭТО ЛИТЕРАТУРНЫЙ ПРОЕКТ)
+                // ================================================================= -->
+                // ИСПРАВЛЕНО: ТОТАЛЬНАЯ ГИГИЕНА КЭША КАРТИНОК ПО МАСКЕ *.* ПРИ DELETE   -->
+                // ================================================================= -->
+                // 1. ОЧИСТКА ГЛОБАЛЬНОГО КЭША GOOGLE DOCS (ВКЛЮЧАЯ ПАПКУ ИЗОБРАЖЕНИЙ)
                 if (targetProject.Type == ProjectType.GoogleDoc && !string.IsNullOrWhiteSpace(targetProject.RootPath))
                 {
-                    // Вытаскиваем уникальный ID документа из ссылки RootPath
                     string googleDocId = GoogleDownloader.ExtractDocumentId(targetProject.RootPath);
                     if (!string.IsNullOrEmpty(googleDocId))
                     {
-                        string googleCachePath = Path.Combine(baseDir, "googlecache", $"{googleDocId}.json");
+                        string googleCachePath = Path.Combine(baseDir, "googlecache");
 
-                        // Безопасно стираем файл кэша, если он физически существует на диске
-                        if (File.Exists(googleCachePath))
+                        // ИСПРАВЛЕНО: При удалении карточки проекта полностью вычищаем 
+                        // его личную папку картинок по маске *.*
+                        string imagesDir = Path.Combine(googleCachePath, "images", googleDocId);
+                        if (Directory.Exists(imagesDir))
                         {
-                            File.Delete(googleCachePath);
-                            System.Diagnostics.Debug.WriteLine($"[Кэш Очищен] Удален файл кэша Google Docs: {googleCachePath}");
+                            var files = Directory.GetFiles(imagesDir, "*.*");
+                            foreach (var file in files)
+                            {
+                                try { File.Delete(file); } catch { }
+                            }
+                            try { Directory.Delete(imagesDir); } catch { }
                         }
+
+                        string jsonCachePath = Path.Combine(googleCachePath, $"{googleDocId}.json");
+                        if (File.Exists(jsonCachePath)) File.Delete(jsonCachePath);
                     }
                 }
+
 
                 // 2. ФИЗИЧЕСКОЕ УДАЛЕНИЕ ФАЙЛА КОНФИГУРАЦИИ ПРОЕКТА
                 string safeName = string.Concat(targetProject.ProjectName.Split(Path.GetInvalidFileNameChars())).Trim();
@@ -1704,7 +1716,7 @@ public partial class MainViewModel : ObservableObject
             {
                 // ДОБАВЛЕНО: Вызов будущего сервисного метода генерации DOCX файлов!
                 await ContextBuilderService.GenerateDocxContextFileAsync(
-                    OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure,
+                    OutputPath, safeFileName, PromptRules, ModuleRules, IncludeDirectoryStructure, IncludeImages,
                     RootNode ?? new FileSystemNode(), SelectedModule?.CheckedEntries ?? new List<SyntaxEntry>(),
                     progressHandler, SelectedProject?.Type ?? ProjectType.Folder, _cts.Token);
             }
@@ -2367,20 +2379,6 @@ public partial class MainViewModel : ObservableObject
             catch { }
         }), System.Windows.Threading.DispatcherPriority.Background);
     }
-    // ================================================================= -->
-    // ЧАСТЬ 1: ЧИСТЫЙ СБОР ПУТЕЙ ДЛЯ СОХРАНЕНИЯ БЕЗ ИСКАЖЕНИЯ ТОЧКАМИ    -->
-    // ================================================================= -->
-    private void UpdateCheckedEntriesForCurrentModule()
-    {
-        if (SelectedModule == null || RootNode == null) return;
-
-        // Очищаем старый список перед перезаписью
-        SelectedModule.CheckedFiles.Clear();
-
-        // Запускаем безопасный сбор путей по всему дереву нод
-        CollectEntriesRecursive(RootNode, SelectedModule.CheckedFiles);
-    }
-
     private void CollectEntriesRecursive(FileSystemNode node, List<string> checkedList)
     {
         if (node == null) return;
@@ -2654,31 +2652,41 @@ public partial class MainViewModel : ObservableObject
     // ================================================================= -->
     // ИСПРАВЛЕНО: ПОЛНАЯ МУЛЬТИЯЗЫЧНОСТЬ И ОЧИСТКА ХАРДКОДА СТРОК       -->
     // ================================================================= -->
+    // ================================================================= -->
+    // ИСПРАВЛЕНО: ТОТАЛЬНАЯ ГИГИЕНА КЭША КАРТИНОК ПО МАСКЕ *.* ПРИ RECREATE -->
+    // ================================================================= -->
     [RelayCommand]
     private async Task RecreateGoogleDoc()
     {
         if (SelectedProject == null || SelectedProject.Type != ProjectType.GoogleDoc) return;
 
-        // 1. Извлекаем строго локализованные строки из XAML-ресурсов приложения
-        string confirmMsg = Application.Current.Resources["Str_Msg_ConfirmRecreateGoogle"] as string
+        string confirmMsg = Application.Current.Resources["Str_Msg_ConfirmDeleteModule"] as string
             ?? "Внимание! Это действие полностью удалит локальный кеш, очистит дерево и принудительно скачает документ заново. Продолжить?";
+        string confirmTitle = Application.Current.Resources["Str_Title_Confirmation"] as string ?? "Подтверждение";
 
-        // Используем ваш легитимный ключ заголовка из страницы 22/24 PDF кода
-        string confirmTitle = Application.Current.Resources["Str_Title_Confirmation"] as string
-            ?? "Подтверждение действия";
-
-        // Показываем автору предупреждающее мультиязычное окно
         var dialogResult = MessageBox.Show(confirmMsg, confirmTitle, MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (dialogResult != MessageBoxResult.Yes) return;
 
         try
         {
-            // 2. Уничтожаем локальный кэш
             string docId = Google.GoogleDownloader.ExtractDocumentId(SelectedProject.RootPath);
             if (!string.IsNullOrEmpty(docId))
             {
                 string projectBaseDir = AppDomain.CurrentDomain.BaseDirectory;
                 string cacheDir = Path.Combine(projectBaseDir, "googlecache");
+
+                // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Находим и под корень вычищаем папку картинок 
+                // этого конкретного документа по маске *.*, не оставляя хвостов!
+                string imagesDir = Path.Combine(cacheDir, "images", docId);
+                if (Directory.Exists(imagesDir))
+                {
+                    var files = Directory.GetFiles(imagesDir, "*.*");
+                    foreach (var file in files)
+                    {
+                        try { File.Delete(file); } catch { }
+                    }
+                    try { Directory.Delete(imagesDir); } catch { }
+                }
 
                 string jsonCachePath = Path.Combine(cacheDir, $"{docId}.json");
                 string metaCachePath = Path.Combine(cacheDir, $"{docId}.meta");
@@ -2687,7 +2695,6 @@ public partial class MainViewModel : ObservableObject
                 if (File.Exists(metaCachePath)) File.Delete(metaCachePath);
             }
 
-            // 3. Обнуляем дерево и модули
             if (RootNode != null)
             {
                 RootNode.Children.Clear();
@@ -2700,36 +2707,21 @@ public partial class MainViewModel : ObservableObject
                 SelectedModule.CheckedEntries?.Clear();
             }
 
-            // ================================================================= -->
-            // ЧАСТЬ 1: ИСПРАВЛЕННЫЙ ПОРЯДОК ОЖИДАНИЯ АСИНХРОННОГО СКАЧИВАНИЯ     -->
-            // ================================================================= -->
             OnPropertyChanged(nameof(RootNode));
-
-            // 4. ЗАПУСКАЕМ НАШ СЕТЕВОЙ GRID-ОВЕРЛЕЙ ДЛЯ СКАЧИВАНИЯ С НУЛЯ
-            // ИСПРАВЛЕНО: Ждём (await) полного завершения скачивания и закрытия оверлея!
             await StartProjectUpdateAsync(UpdateType.GoogleApiLoad, SelectedProject.RootPath);
 
-            // 5. ИСПРАВЛЕНО: Строим дерево ТЕПЕРЬ, когда файл гарантированно лежит в googlecache
-            // Передаем пустой список выбранных файлов, так как мы полностью пересоздали проект
-            // ИСПРАВЛЕНО CS0103: Пересобираем дерево по новому пути через менеджер
             if (SelectedProject != null && SelectedModule != null)
             {
                 var manager = new ProjectTreeManager(SelectedProject, SelectedModule);
                 FileSystemNode.ActiveManager = manager;
                 RootNode = manager.RootNode;
             }
-
         }
         catch (Exception ex)
         {
-            string generalErrorTitle = Application.Current.Resources["Str_Err_GeneralErrorTitle"] as string ?? "Ошибка";
-            MessageBox.Show($"{ex.Message}", generalErrorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show($"{ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
-
-
-
-
 }
 
 
