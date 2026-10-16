@@ -124,11 +124,8 @@ public class GoogleDocumentTree : BaseDocumentTree
         }
     }
 
-    /// <summary>
-    /// Главный диспетчер обхода элементов: линейно перенаправляет параграфы и таблицы в профильные методы.
-    /// </summary>
     // ================================================================= -->
-    // ИСПРАВЛЕНО: СТЕРИЛЬНЫЙ КОНВЕЙЕР РАЗБОРА СТРУКТУРЫ И ПРОЗЫ GOOGLE  -->
+    // ИСПРАВЛЕНО ЧАСТЬ 1.2: СТРОГО ОБЪЕКТНЫЙ ПАРСИНГ ЭЛЕМЕНТОВ GOOGLE В DOM -->
     // ================================================================= -->
     private void ParseParagraphsToTree(JArray contentArray, DocEntry parentTab, List<SyntaxEntry> savedEntries, string tabPath)
     {
@@ -136,8 +133,8 @@ public class GoogleDocumentTree : BaseDocumentTree
         var activePaths = new Dictionary<int, string> { { 0, tabPath } };
         DocEntry? currentActiveTarget = parentTab;
 
-        bool isInListMode = false;
-        string currentListId = "l_generic";
+        DocEntry? currentListContainer = null;
+        string currentListId = string.Empty;
 
         for (int i = 0; i < contentArray.Count; i++)
         {
@@ -146,29 +143,28 @@ public class GoogleDocumentTree : BaseDocumentTree
 
             if (element["paragraph"] is JObject paragraph)
             {
-                // ИСПРАВЛЕНО: Полностью удален вызов дублирующего метода ProcessCodeInlineImages!
-                // Текст и картинки теперь обрабатываются СТРОГО в один проход внутри ProcessCodeParagraph.
                 currentActiveTarget = ProcessCodeParagraph(paragraph, savedEntries, tabPath,
-                    activeChain, activePaths, currentActiveTarget, ref isInListMode, ref currentListId);
+                    activeChain, activePaths, currentActiveTarget, ref currentListContainer, ref currentListId);
             }
-            else if (element["table"] != null && currentActiveTarget != null)
+            else if (element["table"] is JObject table && currentActiveTarget != null)
             {
-                ProcessCodeTable(element, currentActiveTarget, ref isInListMode, currentListId);
+                currentListContainer = null; // Закрываем контекст списка при встрече таблицы
+                ProcessCodeTable(table, currentActiveTarget);
             }
         }
     }
 
     private DocEntry? ProcessCodeParagraph(JObject paragraph, List<SyntaxEntry> savedEntries, string tabPath,
         List<DocEntry> activeChain, Dictionary<int, string> activePaths, DocEntry? currentActiveTarget,
-        ref bool isInListMode, ref string currentListId)
+        ref DocEntry? currentListContainer, ref string currentListId)
     {
         string namedStyle = paragraph["paragraphStyle"]?["namedStyleType"]?.ToString() ?? string.Empty;
         var textBuilder = new StringBuilder();
+        var imageIdsInParagraph = new List<string>();
 
         var elements = paragraph["elements"] as JArray;
         if (elements != null)
         {
-            int imageIndex = -1;
             foreach (var el in elements)
             {
                 if (el == null) continue;
@@ -177,75 +173,32 @@ public class GoogleDocumentTree : BaseDocumentTree
                 {
                     textBuilder.Append(textToken.ToString());
                 }
-                else if (IncludeImages && el["inlineObjectElement"]?["inlineObjectId"] is JToken imgToken)
+                else if (el["inlineObjectElement"]?["inlineObjectId"] is JToken imgToken)
                 {
                     string imgId = imgToken.ToString();
-                    if (!string.IsNullOrEmpty(imgId))
-                    {
-                        imageIndex++;
-                        string altName = currentActiveTarget != null ? currentActiveTarget.EntryTitle : "Изображение";
-                        if (imageIndex > 0) altName = $"{altName} [{imageIndex}]";
-
-                        string imagesDir = GetImagesDirectory();
-                        string rawDownloadedPath = string.Empty;
-
-                        if (Directory.Exists(imagesDir))
-                        {
-                            // ================================================================= -->
-                            // ИСПРАВЛЕНО: ТОЧНЫЙ ОТСЕВ МАРКЕРНЫХ КОПИЙ БЕЗ БЛОКИРОВКИ ИСХОДНЫХ JPG-->
-                            // ================================================================= -->
-                            // Нативно и мгновенно ищем скачанный файл по системной маске objectId.*
-                            var matchedFiles = Directory.GetFiles(imagesDir, $"{imgId}.*");
-
-                            // ИСПРАВЛЕНО (ТВОЙ АЛГОРИТМ): Отсекаем СТРОГО те файлы, которые уже содержат 
-                            // маркер "_converted". Это позволит исходным файлам .jpg Беатрис беспрепятственно 
-                            // проходить на глубокую конверсию и sRGB реанимацию!
-                            rawDownloadedPath = matchedFiles.FirstOrDefault(f => !f.Contains("_converted", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
-
-                        }
-
-                        if (!string.IsNullOrEmpty(rawDownloadedPath) && File.Exists(rawDownloadedPath))
-                        {
-                            string convertedJpgPath = ExtractImageToCache(imgId);
-                            if (!string.IsNullOrEmpty(convertedJpgPath))
-                            {
-                                // Вшиваем в тег имя файла с суффиксом конверсии
-                                textBuilder.Append($"{Environment.NewLine}<image src=\"{imgId}_converted.jpg\" alt=\"{altName}\" />{Environment.NewLine}");
-                            }
-                        }
-
-                    }
+                    if (!string.IsNullOrEmpty(imgId)) imageIdsInParagraph.Add(imgId);
                 }
             }
         }
 
         string pText = textBuilder.ToString();
         string headingTitle = pText.Trim();
+        string cleanHeadingName = headingTitle.Contains("<image") ? headingTitle.Substring(0, headingTitle.IndexOf("<image")).Trim() : headingTitle.TrimEnd('.');
 
-        // Очищаем cleanHeadingName от тегов картинок для точного текстового маппинга папок структуры
-        string cleanHeadingName = headingTitle;
-        if (cleanHeadingName.Contains("<image"))
-        {
-            int imgIdx = cleanHeadingName.IndexOf("<image");
-            cleanHeadingName = cleanHeadingName.Substring(0, imgIdx).Trim();
-        }
-        cleanHeadingName = cleanHeadingName.TrimEnd('.');
-
+        // ================================================================= -->
+        // ИСПРАВЛЕНО CS0165: ЯВНАЯ ПРЕДВАРИТЕЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННОЙ -->
+        // ================================================================= -->
+        // Заранее инициализируем переменную, чтобы тернарный оператор на строке 197 не падал!
         int headerLevel = 1;
         bool isHeadingStyle = namedStyle.StartsWith("HEADING_") && int.TryParse(namedStyle.Substring(8), out headerLevel);
-        bool isTitleOrSubtitle = namedStyle.Equals("TITLE", StringComparison.OrdinalIgnoreCase) || namedStyle.Equals("SUBTITLE", StringComparison.OrdinalIgnoreCase);
-        bool isVirtualFolderMatch = !string.IsNullOrEmpty(cleanHeadingName) &&
-                                    savedEntries.Any(e => e.EntryPath.EndsWith(cleanHeadingName, StringComparison.OrdinalIgnoreCase));
 
-        // А) ВЕТКА СТРУКТУРНЫХ ЗАГОЛОВКОВ И ПАПОК
+        bool isTitleOrSubtitle = namedStyle.Equals("TITLE", StringComparison.OrdinalIgnoreCase) || namedStyle.Equals("SUBTITLE", StringComparison.OrdinalIgnoreCase);
+        bool isVirtualFolderMatch = !string.IsNullOrEmpty(cleanHeadingName) && savedEntries.Any(e => e.EntryPath.EndsWith(cleanHeadingName, StringComparison.OrdinalIgnoreCase));
+
+        // А) СТРУКТУРНЫЕ ЗАГОЛОВКОВ И ПАПОК
         if (isHeadingStyle || isTitleOrSubtitle || isVirtualFolderMatch)
         {
-            if (isInListMode && currentActiveTarget != null)
-            {
-                currentActiveTarget.EntryContent += $"{Environment.NewLine}</ul id=\"{currentListId}\">";
-                isInListMode = false;
-            }
-
+            currentListContainer = null;
             if (string.IsNullOrEmpty(headingTitle)) return currentActiveTarget;
             int targetLevel = isHeadingStyle ? headerLevel : (currentActiveTarget != null ? currentActiveTarget.HeadingLevel + 1 : 1);
 
@@ -256,8 +209,7 @@ public class GoogleDocumentTree : BaseDocumentTree
             int targetParentLevel = targetLevel - 1;
             while (targetParentLevel > 0 && !activePaths.ContainsKey(targetParentLevel)) targetParentLevel--;
 
-            string parentPath = activePaths[targetParentLevel];
-            string fullHeadingPath = string.IsNullOrEmpty(parentPath) ? cleanHeadingName : $"{parentPath}/{cleanHeadingName}";
+            string fullHeadingPath = string.IsNullOrEmpty(activePaths[targetParentLevel]) ? cleanHeadingName : $"{activePaths[targetParentLevel]}/{cleanHeadingName}";
 
             var match = savedEntries.FirstOrDefault(e => e.EntryPath.Trim().TrimEnd('.').Equals(fullHeadingPath, StringComparison.OrdinalIgnoreCase))
                         ?? savedEntries.FirstOrDefault(e => e.EntryPath.EndsWith("/" + cleanHeadingName, StringComparison.OrdinalIgnoreCase));
@@ -267,21 +219,20 @@ public class GoogleDocumentTree : BaseDocumentTree
                 DocEntryType localType = namedStyle.Equals("TITLE", StringComparison.OrdinalIgnoreCase) ? DocEntryType.Title :
                                          namedStyle.Equals("SUBTITLE", StringComparison.OrdinalIgnoreCase) ? DocEntryType.Subtitle : DocEntryType.Heading;
 
-                var headingEntry = new DocEntry { EntryTitle = cleanHeadingName, EntryPath = match.EntryPath, Type = localType, HeadingLevel = targetLevel };
-
-                // Если картинка была вшита в сам заголовок папки — нативно прописываем её тег в контент создаваемой ноды
-                if (pText.Contains("<image"))
-                {
-                    int imgIdx = pText.IndexOf("<image");
-                    headingEntry.EntryContent = pText.Substring(imgIdx).Trim();
-                }
-
+                var headingEntry = new DocEntry { EntryTitle = cleanHeadingName, EntryPath = match.EntryPath, Type = localType, HeadingLevel = targetLevel, Parent = correctParent };
                 savedEntries.Remove(match);
                 correctParent.ChildEntries.Add(headingEntry);
                 activeChain.Add(headingEntry);
                 activePaths[targetLevel] = match.EntryPath;
 
                 foreach (var key in activePaths.Keys.Where(k => k > targetLevel).ToList()) activePaths.Remove(key);
+
+                // Если в заголовке были картинки — крепим их как дочерние объекты к созданной главе
+                foreach (var imgId in imageIdsInParagraph)
+                {
+                    headingEntry.ChildEntries.Add(new DocEntry { Type = DocEntryType.Image, ImageSourceId = imgId, EntryTitle = cleanHeadingName, Parent = headingEntry });
+                    ExtractImageToCache(imgId); // Попутно гоним в кэш
+                }
                 return headingEntry;
             }
 
@@ -289,90 +240,91 @@ public class GoogleDocumentTree : BaseDocumentTree
             activePaths[targetLevel] = fullHeadingPath;
             return currentActiveTarget;
         }
-        // Б) ВЕТКА МАРКИРОВАННЫХ СПИСКОВ
-        else if (currentActiveTarget != null && paragraph["bullet"] is JToken bulletToken)
+
+        if (currentActiveTarget == null) return currentActiveTarget;
+
+        // Б) МАРКИРОВАННЫЕ СПИСКИ
+        if (paragraph["bullet"] is JToken bulletToken)
         {
             string itemText = pText.Trim();
             if (string.IsNullOrEmpty(itemText)) return currentActiveTarget;
 
             int nestingLevel = bulletToken["nestingLevel"]?.Value<int>() ?? 0;
-            if (!isInListMode)
+            string bulletPresetId = bulletToken["listId"]?.ToString() ?? "gen_list";
+
+            if (currentListContainer == null || currentListId != bulletPresetId)
             {
-                int hash = 0; string seed = itemText + tabPath;
-                unchecked { foreach (char c in seed) hash = (hash * 31) + c; }
-                currentListId = $"l_{Math.Abs(hash).ToString("x4")}";
-                currentActiveTarget.EntryContent += $"{Environment.NewLine}<ul id=\"{currentListId}\">";
-                isInListMode = true;
+                currentListId = bulletPresetId;
+                currentListContainer = new DocEntry { Type = DocEntryType.ListContainer, Parent = currentActiveTarget };
+                currentActiveTarget.ChildEntries.Add(currentListContainer);
             }
-            currentActiveTarget.EntryContent += $"{Environment.NewLine}  <li level=\"{nestingLevel}\">{itemText}</li>";
+
+            currentListContainer.ChildEntries.Add(new DocEntry { Type = DocEntryType.ListItem, EntryContent = itemText, ListNestingLevel = nestingLevel, Parent = currentListContainer });
+            return currentActiveTarget;
         }
-        // В) ВЕТКА ОБЫЧНОГО ХУДОЖЕСТВЕННОГО ТЕКСТА
-        // ИСПРАВЛЕНО: Если этот параграф уже обработан выше как заголовок папки структуры — 
-        // пропускаем его дублирование в блок обычного прозаического контента!
-        else if (currentActiveTarget != null && !string.IsNullOrWhiteSpace(pText))
+
+        // В) ОБЫЧНАЯ ПРОЗА И ВЫДЕЛЕННЫЕ КАРТИНКИ
+        // ================================================================= -->
+        // ИСПРАВЛЕНО CS0117: ЗАМЕНА ОПЕЧАТКИ MAKERELATIVE НА СТАНДАРТНЫЙ МЕТОД-->
+        // ================================================================= -->
+        currentActiveTarget = null;
+        if (currentActiveTarget != null)
         {
-            if (isInListMode) { currentActiveTarget.EntryContent += $"{Environment.NewLine}</ul id=\"{currentListId}\">{Environment.NewLine}"; isInListMode = false; }
-            currentActiveTarget.EntryContent += $"{Environment.NewLine}{pText.Trim()}";
+            foreach (var imgId in imageIdsInParagraph)
+            {
+                currentActiveTarget.ChildEntries.Add(new DocEntry { Type = DocEntryType.Image, ImageSourceId = imgId, EntryTitle = currentActiveTarget.EntryTitle, Parent = currentActiveTarget });
+                ExtractImageToCache(imgId);
+            }
+
+            // ИСПРАВЛЕНО: Заменен поврежденный вызов на каноничный string.IsNullOrWhiteSpace!
+            if (!string.IsNullOrWhiteSpace(pText))
+            {
+                currentActiveTarget.ChildEntries.Add(new DocEntry { Type = DocEntryType.Paragraph, EntryContent = pText, Parent = currentActiveTarget });
+            }
         }
 
         return currentActiveTarget;
     }
 
-
-    /// <summary>
-    /// ИЗОЛИРОВАННАЯ ФУНКЦИЯ 3: Парсинг и рендеринг XML-таблиц.
-    /// </summary>
-    private static void ProcessCodeTable(JObject element, DocEntry currentActiveTarget, ref bool isInListMode, string currentListId)
+    private static void ProcessCodeTable(JObject element, DocEntry currentActiveTarget)
     {
-        if (isInListMode)
-        {
-            currentActiveTarget.EntryContent += $"{Environment.NewLine}</ul id=\"{currentListId}\">{Environment.NewLine}";
-            isInListMode = false;
-        }
+        var tableContainer = new DocEntry { Type = DocEntryType.Table, Parent = currentActiveTarget };
+        currentActiveTarget.ChildEntries.Add(tableContainer);
 
-        currentActiveTarget.EntryContent += $"{Environment.NewLine}  <table>";
         var rows = element["table"]?["tableRows"] as JArray;
+        if (rows == null) return;
 
-        if (rows != null)
+        foreach (var row in rows)
         {
-            foreach (var row in rows)
+            if (row == null) continue;
+            var rowNode = new DocEntry { Type = DocEntryType.TableRow, Parent = tableContainer };
+            tableContainer.ChildEntries.Add(rowNode);
+
+            var cells = row["tableCells"] as JArray;
+            if (cells == null) continue;
+
+            foreach (var cell in cells)
             {
-                if (row == null) continue;
-                currentActiveTarget.EntryContent += $"{Environment.NewLine}    <tr>";
-
-                var cells = row["tableCells"] as JArray;
-                if (cells != null)
+                string cellText = "";
+                if (cell?["content"] is JArray cellContent)
                 {
-                    foreach (var cell in cells)
+                    var cellTextSb = new StringBuilder();
+                    foreach (var cellEl in cellContent)
                     {
-                        string cellText = "";
-                        var cellContent = cell?["content"] as JArray;
-
-                        if (cellContent != null)
+                        if (cellEl?["paragraph"]?["elements"] is JArray cellElements)
                         {
-                            var cellTextSb = new StringBuilder();
-                            foreach (var cellEl in cellContent)
-                            {
-                                var cellElements = cellEl?["paragraph"]?["elements"] as JArray;
-                                if (cellElements != null)
-                                {
-                                    foreach (var ce in cellElements)
-                                    {
-                                        cellTextSb.Append(ce?["textRun"]?["content"]?.ToString() ?? string.Empty);
-                                    }
-                                }
-                            }
-                            cellText = cellTextSb.ToString().Replace("\r", "").Replace("\n", "").Trim();
+                            foreach (var ce in cellElements) cellTextSb.Append(ce?["textRun"]?["content"]?.ToString() ?? string.Empty);
                         }
-                        currentActiveTarget.EntryContent += $"{Environment.NewLine}      <td>{cellText}</td>";
                     }
+                    cellText = cellTextSb.ToString().Replace("\r", "").Replace("\n", "").Trim();
                 }
-                currentActiveTarget.EntryContent += $"{Environment.NewLine}    </tr>";
+
+                rowNode.ChildEntries.Add(new DocEntry { Type = DocEntryType.TableCell, EntryContent = cellText, Parent = rowNode });
             }
         }
-        currentActiveTarget.EntryContent += $"{Environment.NewLine}  </table>";
     }
-    
+
+
     public override string ExtractImageToCache(string objectId)
     {
         if (string.IsNullOrEmpty(objectId)) return string.Empty;

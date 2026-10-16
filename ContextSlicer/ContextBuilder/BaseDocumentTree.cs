@@ -25,18 +25,17 @@ public enum DocEntryType
     Image          // Тег <image />
 }
 
-/// <summary>
-/// Универсальный узел древовидной объектной модели документа (DOM).
-/// </summary>
+// ================================================================= -->
+// ИСПРАВЛЕНО: ОБЪЕКТНЫЙ САМОДОСТАТОЧНЫЙ DOM-УЗЕЛ DOCENTRY ДЛЯ ИИ   -->
+// ================================================================= -->
 public class DocEntry
 {
     public string EntryTitle { get; set; } = string.Empty;
-    public string EntryContent { get; set; } = string.Empty;
+    public string EntryContent { get; set; } = string.Empty; // Плоский текст (если есть)
     public string EntryPath { get; set; } = string.Empty;
     public DocEntryType Type { get; set; }
-    public int HeadingLevel { get; set; } = 0; // 0 для вкладок, 1-6 для HEADING_
+    public int HeadingLevel { get; set; } = 0;
 
-    // Специализированные атрибуты
     public string ImageSourceId { get; set; } = string.Empty;
     public int ListNestingLevel { get; set; } = 0;
     public List<List<string>> TableMatrix { get; set; } = new();
@@ -54,16 +53,153 @@ public class DocEntry
                 string prefix = Type == DocEntryType.Tab ? "t" : "h";
                 string safePath = EntryPath ?? EntryTitle ?? string.Empty;
                 int hash = 0;
-                unchecked
-                {
-                    foreach (char c in safePath) hash = (hash * 31) + c;
-                }
+                unchecked { foreach (char c in safePath) hash = (hash * 31) + c; }
                 _generatedId = $"{prefix}_{Math.Abs(hash).ToString("x4")}";
             }
             return _generatedId;
         }
     }
+
+    /// <summary>
+    /// ТВОЙ КОНЦЕПТ: Рекурсивно собирает контент узла и его детей, 
+    /// самостоятельно заворачивая содержимое в валидные теги разметки ИИ.
+    /// </summary>
+    public string GetFormattedContent(bool includeImages)
+    {
+        var sb = new StringBuilder();
+        string idAttr = this.GeneratedId;
+
+        // 1. Обертка для контейнеров (Вкладки и Заголовки глав)
+        if (Type == DocEntryType.Tab || Type == DocEntryType.Heading)
+        {
+            string tagName = Type == DocEntryType.Tab ? "tab" : "heading";
+            sb.AppendLine($"<{tagName} id=\"{idAttr}\" path=\"{EntryPath}\">");
+
+            // Наливаем собственный текст узла, если он есть
+            if (!string.IsNullOrWhiteSpace(EntryContent))
+            {
+                sb.AppendLine(EntryContent.Trim());
+            }
+
+            // Рекурсивно собираем контент всех дочерних элементов матрёшки
+            foreach (var child in ChildEntries)
+            {
+                string childContent = child.GetFormattedContent(includeImages);
+                if (!string.IsNullOrWhiteSpace(childContent))
+                {
+                    sb.Append(childContent);
+                }
+            }
+
+            sb.AppendLine($"</{tagName} id=\"{idAttr}\">");
+        }
+        // 2. Обертка для нативных списков <ul> / <li>
+        else if (Type == DocEntryType.ListContainer)
+        {
+            sb.AppendLine($"<ul id=\"{idAttr}\">");
+            foreach (var child in ChildEntries) sb.Append(child.GetFormattedContent(includeImages));
+            sb.AppendLine($"</ul id=\"{idAttr}\">");
+        }
+        else if (Type == DocEntryType.ListItem)
+        {
+            sb.AppendLine($"  <li level=\"{ListNestingLevel}\">{EntryContent.Trim()}</li>");
+        }
+        // 3. Обертка для нативных таблиц <table>
+        else if (Type == DocEntryType.Table)
+        {
+            sb.AppendLine("  <table>");
+            foreach (var row in ChildEntries) sb.Append(row.GetFormattedContent(includeImages));
+            sb.AppendLine("  </table>");
+        }
+        else if (Type == DocEntryType.TableRow)
+        {
+            sb.AppendLine("    <tr>");
+            foreach (var cell in ChildEntries) sb.Append(cell.GetFormattedContent(includeImages));
+            sb.AppendLine("    </tr>");
+        }
+        else if (Type == DocEntryType.TableCell)
+        {
+            sb.AppendLine($"      <td>{EntryContent.Trim()}</td>");
+        }
+        // 4. Обертка для изолированных изображений <image />
+        else if (Type == DocEntryType.Image)
+        {
+            if (includeImages)
+            {
+                sb.AppendLine($"<image src=\"{ImageSourceId}_converted.jpg\" alt=\"{EntryTitle}\" />");
+            }
+        }
+        // 5. Обычный художественный абзац прозы
+        else if (Type == DocEntryType.Paragraph)
+        {
+            if (!string.IsNullOrWhiteSpace(EntryContent))
+            {
+                sb.AppendLine(EntryContent.Trim());
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    // ================================================================= -->
+    // ДОБАВЛЕНО: КЛОНИРОВАНИЕ И ФИЛЬТРАЦИЯ DOM-ВЕТВЕЙ ДЛЯ СБОРЩИКА      -->
+    // ================================================================= -->
+    /// <summary>
+    /// ТВОЙ КОНЦЕПТ: Проверяет ветку и возвращает её отфильтрованный слепок.
+    /// Если узел одобрен на UI или имеет одобренных детей, он попадает в слепок,
+    /// полностью сохраняя иерархию папок-транзитов и контент!
+    /// </summary>
+    public DocEntry? CloneApprovedBranch(HashSet<string> approvedPaths)
+    {
+        if (approvedPaths == null) return null;
+
+        // Проверяем, выбрана ли данная конкретная нода на интерфейсе
+        bool isCurrentApproved = approvedPaths.Contains(this.EntryPath);
+
+        // Рекурсивно собираем одобренных детей
+        var filteredChildren = new List<DocEntry>();
+        foreach (var child in this.ChildEntries)
+        {
+            var approvedChild = child.CloneApprovedBranch(approvedPaths);
+            if (approvedChild != null)
+            {
+                filteredChildren.Add(approvedChild);
+            }
+        }
+
+        // Ловить нечего: ни сам узел не выбран, ни детей внутри этой ветки нет!
+        if (!isCurrentApproved && filteredChildren.Count == 0)
+        {
+            return null;
+        }
+
+        // Создаем чистый поверхностный клон текущего узла структуры
+        var clone = new DocEntry
+        {
+            EntryTitle = this.EntryTitle,
+            EntryPath = this.EntryPath,
+            Type = this.Type,
+            HeadingLevel = this.HeadingLevel,
+            ImageSourceId = this.ImageSourceId,
+            ListNestingLevel = this.ListNestingLevel,
+            TableMatrix = this.TableMatrix,
+            // Если галочка на сам узел не стоит (это транзитная папка), 
+            // его собственный контент обнуляем, чтобы не было дубликатов текста!
+            EntryContent = isCurrentApproved ? this.EntryContent : string.Empty
+        };
+
+        // Навешиваем отфильтрованных детей и восстанавливаем ссылки на родителя
+        foreach (var childClone in filteredChildren)
+        {
+            childClone.Parent = clone;
+            clone.ChildEntries.Add(childClone);
+        }
+
+        return clone;
+    }
+
 }
+
 
 /// <summary>
 /// Единый базовый класс древовидной структуры для всех типов литературных документов.
@@ -296,4 +432,58 @@ public abstract class BaseDocumentTree
     /// конкретного изображения и возвращает абсолютный путь к физическому файлу кэша.
     /// </summary>
     public abstract string ExtractImageToCache(string objectId);
+
+    // ================================================================= -->
+    // ДОБАВЛЕНО: ЕДИНЫЙ ЦЕНТРАЛИЗОВАННЫЙ СБОРЩИК ОГЛАВЛЕНИЯ ИЗ DOM     -->
+    // ================================================================= -->
+    /// <summary>
+    /// Универсальный метод базового класса для построения валидного 
+    /// XML-блока оглавления структуры на основе живого объектного DOM-дерева.
+    /// </summary>
+    public string BuildUniversalStructureXml()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<document_structure>");
+        sb.AppendLine("  <ul id=\"toc_root\">");
+
+        // Запускаем рекурсивный обход корневых элементов дерева
+        foreach (var child in this.ChildEntries)
+        {
+            BuildStructureLineRecursive(sb, child, 1);
+        }
+
+        sb.AppendLine("  </ul id=\"toc_root\">");
+        sb.Append("</document_structure>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Вспомогательный рекурсивный обходчик ветвей для выстраивания честных уровней вложенности.
+    /// </summary>
+    private static void BuildStructureLineRecursive(StringBuilder sb, DocEntry entry, int currentLevel)
+    {
+        if (entry == null) return;
+
+        // Определяем строковый маркер типа узла для XML-разметки оглавления
+        string typeStr = entry.Type switch
+        {
+            DocEntryType.Tab => "tab",
+            DocEntryType.Title => "title",
+            DocEntryType.Subtitle => "subtitle",
+            _ => "heading"
+        };
+
+        // Заводим уникальный псевдо-ID на основе хэш-кода для валидности XML-атрибутов
+        string idAttr = "t_" + Math.Abs(entry.EntryTitle.GetHashCode()).ToString("x8");
+
+        // Генерируем снайперскую строчку элемента списка с точным runtime-уровнем level
+        sb.AppendLine($"    <li level=\"{currentLevel}\" type=\"{typeStr}\" id=\"{idAttr}\">{entry.EntryTitle}</li>");
+
+        // Уходим вглубь по дочерней коллекции матрёшки, честно инкрементируя шаг уровня
+        foreach (var child in entry.ChildEntries)
+        {
+            BuildStructureLineRecursive(sb, child, currentLevel + 1);
+        }
+    }
+
 }
